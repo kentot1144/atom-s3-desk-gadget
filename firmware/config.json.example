@@ -1,0 +1,23 @@
+{
+  "wifi": {
+    "ssid": "YOUR_WIFI_SSID",
+    "password": "YOUR_WIFI_PASSWORD"
+  },
+  "location": { "lat": 0.0, "lon": 0.0, "tz": 0, "name": "Your City" },
+  "hub": { "urls": ["http://192.168.1.10:8765", "http://YOUR_SECOND_HUB_HOST:8765"] },
+  "display": {
+    "brightness": 120,
+    "auto": true,
+    "light_pin": 6,
+    "min": 10,
+    "max": 200,
+    "interval": 2000
+  },
+  "alerts": {
+    "blink": true,
+    "led_gpio": 5,
+    "backlight": false,
+    "rgb_gpio": 0
+  },
+  "pomodoro": { "focus": 25, "break": 5 }
+}

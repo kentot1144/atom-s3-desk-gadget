@@ -1,0 +1,14 @@
+{
+  "port": 8765,
+  "target": "YOUR_TARGET_URL_HERE",
+  "crafty": {
+    "url": "https://YOUR_CRAFTY_URL_HERE:8443",
+    "api_key": "CHANGE_ME_TO_YOUR_API_KEY",
+    "enabled": true,
+    "timeout": 4
+  },
+  "services": [
+    { "id": "main",     "name": "MAIN",     "type": "http", "url": "YOUR_URL_HERE", "alt": "http://YOUR_LOCAL_IP/", "note": "443/80", "critical": true },
+    { "id": "vnc",      "name": "VNC",      "type": "tcp",  "port": 6080, "hosts": ["YOUR_LOCAL_IP", "YOUR_PUBLIC_DOMAIN"] }
+  ]
+}

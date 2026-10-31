@@ -1,0 +1,11 @@
+# Ignore sensitive configuration and build files
+hub/hub_config.json
+firmware/config.json
+*.pyc
+__pycache__/
+.DS_Store
+push.log
+boot.log
+tools/diag.txt
+tools/wtest.txt
+tools/wtest2.txt

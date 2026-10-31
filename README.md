@@ -1,0 +1,112 @@
+# AtomS3 Desk Gadget
+
+A multi-functional desk gadget built with an M5Stack AtomS3 (MicroPython) and a
+small Python hub that runs on a PC in the same LAN.
+
+## Features
+
+- **Clock & weather** on the 128x128 screen, plus a cute idle mascot.
+- **PC stats** (CPU, RAM, GPU, uptime) served by the local hub.
+- **Service monitoring**: HTTP / TCP / Minecraft checks with alert rules.
+- **Alert LED** on GPIO5 flashes when a critical service is down.
+- **Auto-brightness** from the on-board light sensor (GPIO6).
+- **Spotify screen**: shows track, artist and the playing device, with
+  play/pause, next and previous controls on the device button.
+
+## Two UI modes
+
+| Mode | Screens |
+| --- | --- |
+| Normal | clock, weather, PC stats, services (4 per page), pomodoro, mascot |
+| Spotify | track, artist, device, progress bar |
+
+Switch between them with a **5 second button hold**. In Spotify mode:
+
+| Gesture | Action |
+| --- | --- |
+| single click | play / pause |
+| double click | next track |
+| triple click | previous track |
+
+## Project structure
+
+```text
+firmware/            MicroPython code for the AtomS3
+  boot.py main.py    entry points
+  config.json        Wi-Fi, location, hub URLs, pins (copy from .example)
+  libs/desk/         app, pages, ui, net, led, light
+hub/                 PC-side hub
+  hub.py             HTTP server: /stats, /spotify_*
+  spotify_bridge.py  Spotify backend (SMTC by default)
+  hub_config.json    services + keys (copy from .example)
+  start_hub.bat      silent launcher (hands off to the VBS)
+  start_hub_silent.vbs  fully window-less launcher
+  start_hub_debug.bat   visible console with logs (for debugging)
+  install_hub.bat/.ps1  firewall rule + silent autostart at logon
+tools/               flashing and network diagnostics helpers
+```
+
+## Setup
+
+### 1. Device
+
+1. Install the UIFlow2 firmware on the AtomS3 (the stock environment can be
+   restored at any time from UIFlow2).
+2. Copy `firmware/config.json.example` to `firmware/config.json` and fill in
+   your Wi-Fi SSID/password, location and the hub URL(s).
+3. Flash with:
+
+   ```bat
+   python tools\push.py
+   ```
+
+   The script writes every file under `firmware/` to `/flash` over the serial
+   port and reboots the device. Set the `PORT` environment variable if your
+   board is not on `COM3`.
+
+### 2. Hub (PC)
+
+1. Install Python 3.10+ and `pip install psutil`.
+2. Copy `hub/hub_config.json.example` to `hub/hub_config.json` and replace every
+   placeholder (`YOUR_...`) with your own URLs, IPs and API key.
+3. Double-click `hub/start_hub_silent.vbs` (or run `hub/install_hub.bat` once to
+   add the firewall rule and a silent autostart shortcut).
+4. Open <http://localhost:8765/stats> to check it works.
+
+The hub is single-instance: if another copy is already listening on port 8765,
+a new copy prints a message and exits instead of competing for requests.
+
+### 3. Service checks
+
+`hub/hub_config.json` describes what to monitor. Supported types:
+
+- `http` – up when the status code is below 500 (redirects are not followed)
+- `tcp` – up when the TCP port accepts a connection
+- `mc` – Minecraft server list ping
+
+Each service may list several `hosts`; the first one that answers wins. Mark a
+service `"critical": true` to make the device LED flash when it is down.
+
+### 4. Spotify
+
+Two backends are supported, chosen automatically:
+
+1. **Windows media sessions (SMTC)** – the default. Works with the Spotify
+   desktop app and browser tabs, no login required.
+2. **SpotAPI** – only enabled when `hub/spotify_cookies.json` exists (see
+   [Aran404/SpotAPI](https://github.com/Aran404/SpotAPI)). If the SpotAPI call
+   fails, the hub falls back to SMTC automatically.
+
+## Security
+
+**Never commit real configuration files.** `hub_config.json`,
+`firmware/config.json`, `spotify_cookies.json` and the cookie export tool can
+contain API keys, internal IPs and account cookies. They are listed in
+`.gitignore`; use the provided `*.example` templates instead.
+
+If a key was ever committed, revoke/regenerate it — deleting the file later
+does not remove it from Git history.
+
+## License
+
+MIT
