@@ -78,12 +78,22 @@ def sample_loop():
         time.sleep(1.0)
 
 
+# When the hub runs under pythonw.exe there is no console. A plain
+# subprocess.run() then gives the child a brand new *visible* console, so
+# every nvidia-smi / powershell call flashes a black cmd window. These
+# creation flags keep helper processes completely silent.
+NO_WINDOW = 0
+if os.name == "nt":
+    NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
 def _win_boot_time():
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
              "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToFileTimeUtc()"],
-            capture_output=True, text=True, timeout=6).stdout.strip()
+            capture_output=True, text=True, timeout=6,
+            creationflags=NO_WINDOW).stdout.strip()
         return time.time() - (int(out) / 10_000_000 - 11644473600)
     except Exception:
         return time.time()
@@ -98,7 +108,8 @@ def gpu_info():
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=4).stdout.strip()
+            capture_output=True, text=True, timeout=4,
+            creationflags=NO_WINDOW).stdout.strip()
         if out:
             parts = [p.strip() for p in out.splitlines()[0].split(",")]
             data = {
