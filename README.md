@@ -72,6 +72,24 @@ tools/               flashing and network diagnostics helpers
    A single object (`{"ssid": ..., "password": ...}`) still works. When the
    device is offline it cycles through the list every few seconds and
    remembers the network that worked.
+
+   The hub can also be found automatically. Add its MAC address to pin the
+   right PC (optional but recommended):
+
+   ```json
+   "hub": {
+     "urls": ["http://192.168.1.10:8765"],
+     "mac": "00:11:22:33:44:55",
+     "discovery_port": 8766
+   }
+   ```
+
+   When none of the `urls` answers, the device broadcasts a UDP packet on
+   port 8766. The hub replies with its port and MAC addresses, so a DHCP
+   address change no longer breaks PC stats or Spotify. With `mac` set, only
+   that machine is accepted; leave it empty to accept any hub. `host_mac` in
+   `/stats` shows the PC's MAC. Discovery needs direct device-to-PC traffic:
+   guest Wi-Fi with AP isolation blocks both the hub and discovery.
 3. Flash with:
 
    ```bat

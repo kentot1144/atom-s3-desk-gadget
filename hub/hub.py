@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +30,7 @@ with open(CFG_PATH, "r", encoding="utf-8") as f:
     CFG = json.load(f)
 
 PORT = int(CFG.get("port", 8765))
+DISCOVERY_PORT = int(CFG.get("discovery_port", 8766))
 TARGET = CFG.get("target", "")
 SERVICES = CFG.get("services") or []
 ALERT_RULES = CFG.get("alert_rules") or []
@@ -458,6 +460,7 @@ def stats():
     return {
         "ts": int(time.time()),
         "host": socket.gethostname(),
+        "host_mac": hub_macs()[0],
         "cpu": {"percent": round(STATE["cpu"], 1)},
         "mem": {"percent": round(STATE["mem"], 1)},
         "gpu": gpu_info(),
@@ -568,6 +571,70 @@ class HubServer(ThreadingHTTPServer):
         ThreadingHTTPServer.server_bind(self)
 
 
+_mac_cache = {"at": 0.0, "data": []}
+
+
+def hub_macs():
+    """Link-layer addresses of this PC (lowercase, colon separated)."""
+    now = time.time()
+    if _mac_cache["data"] and now - _mac_cache["at"] < 60:
+        return _mac_cache["data"]
+    out = []
+    try:
+        if psutil:
+            link = getattr(psutil, "AF_LINK", -1)
+            for alist in psutil.net_if_addrs().values():
+                for a in alist:
+                    if a.family == link and a.address:
+                        m = a.address.lower().replace("-", ":")
+                        if m not in out:
+                            out.append(m)
+    except Exception:
+        pass
+    if not out:
+        n = uuid.getnode()
+        out.append(":".join("%02x" % ((n >> i) & 0xFF)
+                            for i in (40, 32, 24, 16, 8, 0)))
+    _mac_cache["at"] = now
+    _mac_cache["data"] = out
+    return out
+
+
+def discovery_loop():
+    """Answer ATOMDISCOVER broadcasts so the device can find this PC.
+
+    The device sends a UDP broadcast to port 8766. The reply carries the hub
+    port and every MAC address of this machine, so the device can tell the
+    right PC apart from other hosts even when its IP address changes.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", DISCOVERY_PORT))
+    except OSError:
+        s.close()
+        return
+    host = socket.gethostname()
+    while True:
+        try:
+            data, addr = s.recvfrom(512)
+        except OSError:
+            time.sleep(0.5)
+            continue
+        if not data.startswith(b"ATOMDISCOVER"):
+            continue
+        reply = json.dumps({
+            "service": "atom-hub",
+            "port": PORT,
+            "macs": hub_macs(),
+            "host": host,
+        }).encode()
+        try:
+            s.sendto(reply, addr)
+        except OSError:
+            pass
+
+
 def port_in_use():
     """True when something already listens on PORT (another hub copy)."""
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -586,6 +653,7 @@ def main():
         return
     threading.Thread(target=sample_loop, daemon=True).start()
     threading.Thread(target=refresh_loop, daemon=True).start()
+    threading.Thread(target=discovery_loop, daemon=True).start()
     spotify_bridge.start()
     try:
         srv = HubServer(("0.0.0.0", PORT), Handler)

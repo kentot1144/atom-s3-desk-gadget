@@ -28,15 +28,22 @@ if ($LASTEXITCODE -ne 0) {
     & python -m pip install --user psutil
 }
 
-# --- firewall rule (UAC prompt) ---
-$rule = Get-NetFirewallRule -DisplayName "AtomS3 Hub 8765" -ErrorAction SilentlyContinue
-if (-not $rule) {
-    Write-Host "Adding firewall rule for TCP 8765 (approve the UAC prompt)..."
-    Start-Process netsh -Verb RunAs -ArgumentList 'advfirewall firewall add rule name="AtomS3 Hub 8765" dir=in action=allow protocol=TCP localport=8765' | Out-Null
+# --- firewall rules (UAC prompt) ---
+function Ensure-Rule($name, $proto, $port) {
+    if (Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue) {
+        Write-Host "Firewall rule present: $name"
+        return
+    }
+    Write-Host "Adding firewall rule for $proto $port (approve the UAC prompt)..."
+    Start-Process netsh -Verb RunAs -ArgumentList (
+        'advfirewall firewall add rule name="' + $name +
+        '" dir=in action=allow protocol=' + $proto + ' localport=' + $port
+    ) | Out-Null
     Start-Sleep -Seconds 4
-} else {
-    Write-Host "Firewall rule already present."
 }
+
+Ensure-Rule "AtomS3 Hub 8765" TCP 8765
+Ensure-Rule "AtomS3 Hub discovery 8766" UDP 8766
 
 # --- stop every old hub instance (python.exe or pythonw.exe) ---
 $old = Get-CimInstance Win32_Process |

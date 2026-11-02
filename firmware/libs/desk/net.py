@@ -85,6 +85,10 @@ class Net:
         self.hub_targets = []
         self.hub_idx = 0
         hub_cfg = cfg.get("hub") or {}
+        self.hub_mac = ((hub_cfg.get("mac") or "").strip().lower()
+                        .replace("-", ":"))
+        self.disc_port = int(hub_cfg.get("discovery_port", 8766))
+        self.disc_at = time.ticks_ms() - 60000
         urls = hub_cfg.get("urls")
         if not urls:
             urls = [hub_cfg.get("url", "")]
@@ -137,6 +141,73 @@ class Net:
         if not u:
             return None
         return (u, port, path)
+
+    def discover(self, now):
+        """Find the hub by UDP broadcast on the LAN.
+
+        The hub answers with its port and MAC addresses. If hub.mac is set in
+        config.json only that PC is accepted, so a DHCP address change or a
+        different machine on the same LAN cannot hijack the link.
+        """
+        self.disc_at = now
+        try:
+            cfg = self.wlan.ifconfig()
+            ip, mask = cfg[0], cfg[1]
+        except Exception:
+            return False
+        bcasts = ["255.255.255.255"]
+        try:
+            a = [int(x) for x in ip.split(".")]
+            m = [int(x) for x in mask.split(".")]
+            bc = ".".join(str(a[i] | (255 - m[i])) for i in range(4))
+            if bc not in bcasts:
+                bcasts.append(bc)
+        except Exception:
+            pass
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            except Exception:
+                pass
+            s.settimeout(0.3)
+            for bc in bcasts:
+                try:
+                    s.sendto(b"ATOMDISCOVER", (bc, self.disc_port))
+                except Exception:
+                    pass
+            end = time.ticks_add(now, 2000)
+            while time.ticks_diff(end, time.ticks_ms()) > 0:
+                try:
+                    data, addr = s.recvfrom(256)
+                except OSError:
+                    continue
+                try:
+                    d = json.loads(data.decode())
+                except Exception:
+                    continue
+                if d.get("service") != "atom-hub":
+                    continue
+                if self.hub_mac:
+                    macs = [str(x).lower().replace("-", ":")
+                            for x in (d.get("macs") or [])]
+                    if self.hub_mac not in macs:
+                        continue
+                host = addr[0]
+                tgt = (host, int(d.get("port") or 8765), "/stats")
+                new = [tgt]
+                for t in self.hub_targets:
+                    if t[0] != host:
+                        new.append(t)
+                self.hub_targets = new
+                self.hub_host, self.hub_port, self.hub_path = tgt
+                self.hub_idx = 0
+                self.hub_next = 0
+                self.hub_err = ""
+                return True
+        finally:
+            s.close()
+        return False
 
     def poll(self, now):
         try:
@@ -247,11 +318,14 @@ class Net:
             return False
 
     def maybe_hub(self, force=False):
-        if not self.hub_targets:
-            return False
         if not self.connected:
             return False
         now = time.ticks_ms()
+        if not self.hub_targets:
+            if time.ticks_diff(now, self.disc_at) > 15000:
+                self.discover(now)
+            if not self.hub_targets:
+                return False
         if not force and time.ticks_diff(now, self.hub_next) < 0:
             return False
         host, port, path = self.hub_targets[self.hub_idx]
@@ -273,6 +347,9 @@ class Net:
             return True
         except Exception as e:
             self.hub_err = "hub " + str(e)
+            if time.ticks_diff(now, self.disc_at) > 20000:
+                if self.discover(now):
+                    return False
             if len(self.hub_targets) > 1:
                 self.hub_idx = (self.hub_idx + 1) % len(self.hub_targets)
                 self.hub_next = time.ticks_add(now, 4000)
