@@ -177,22 +177,29 @@ class Net:
             self.next_try = time.ticks_add(now, 30000)
             return
         if st == 1001 or st == 1010:
-            self.next_try = time.ticks_add(now, 2000)
+            self.next_try = time.ticks_add(now, 1500)
+            return
+        if st == 1002 or st == 1003 or st == 1004:
+            # wrong password / no AP / connect failed: move on quickly
+            self.next_try = time.ticks_add(now, 500)
             return
         ssid, password = self.nets[self.net_idx]
         try:
-            self.wlan.connect(ssid, password)
+            if password:
+                self.wlan.connect(ssid, password)
+            else:
+                self.wlan.connect(ssid)          # open network
             self.try_ssid = ssid
             self.ssid = ssid
             self.password = password
             self.weather_err = ""
             # try the next known network if this one does not come up
             self.net_idx = (self.net_idx + 1) % len(self.nets)
-            self.next_try = time.ticks_add(now, 6000)
+            self.next_try = time.ticks_add(now, 3000)
         except Exception as e:
             self.weather_err = "wifi " + str(e)
             self.net_idx = (self.net_idx + 1) % len(self.nets)
-            self.next_try = time.ticks_add(now, 8000)
+            self.next_try = time.ticks_add(now, 3000)
 
     def _sync_ntp(self, now):
         self.ntp_next = time.ticks_add(now, 30000)
