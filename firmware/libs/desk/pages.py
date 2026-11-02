@@ -491,16 +491,24 @@ class SpotifyPage(BasePage):
     FRAME_MS = 33
     HOLD_MS = 1000
 
+    # Regions that are repainted independently (no full-screen flash).
+    BAND_Y, BAND_H = 21, 63          # song + artist + device lines
+    PROG_Y, PROG_H = 84, 34          # progress bar, times, play state
+
     def __init__(self):
         self.at = -1000000
         self.data = None
         self.err = ""
+        self.sig = None
         self.frame_at = 0
         self.pos = 0
         self.dir = 1
         self.hold_until = 0
         self.max_off = 0
         self.long = False
+        self.dirty_full = True
+        self.dirty_lines = False
+        self.dirty_prog = False
 
     def enter(self, app):
         now = time.ticks_ms()
@@ -509,41 +517,58 @@ class SpotifyPage(BasePage):
         self.pos = 0
         self.dir = 1
         self.hold_until = time.ticks_add(now, self.HOLD_MS)
+        self.sig = None
+        self.dirty_full = True
         self.refresh(app)
 
     def action(self, app):
         self.refresh(app, force=True)
 
+    def _fail(self, msg):
+        """Switch to the error screen; only touch the screen if it changed."""
+        msg = msg[:22]
+        if msg != self.err or self.data is not None:
+            self.err = msg
+            self.data = None
+            self.long = False
+            self.animating = False
+            self.sig = None
+            self.dirty_full = True
+
+    def _dirty(self):
+        return self.dirty_full or self.dirty_lines or self.dirty_prog
+
     def refresh(self, app, force=False):
         now = time.ticks_ms()
         if not force and time.ticks_diff(now, self.at) < self.REFRESH_MS:
-            return False
+            return self._dirty()
         self.at = now
         d = app._http_get("/spotify_status")
         if not d:
-            self.err = (app.http_err or "HUB OFFLINE")[:22]
-            self.data = None
-            self.long = False
-            self.animating = False
-            return True
+            self._fail(app.http_err or "HUB OFFLINE")
+            return self._dirty()
         st = d.get("status")
-        if st in ("success", "not_playing", "paused"):
-            prev = self.data or {}
-            self.data = d
-            self.err = ""
-            self._plan(d)
-            if (d.get("song"), d.get("artist"), d.get("device")) != (
-                    prev.get("song"), prev.get("artist"), prev.get("device")):
-                self.pos = 0
-                self.dir = 1
-                self.frame_at = now
-                self.hold_until = time.ticks_add(now, self.HOLD_MS)
+        if st not in ("success", "not_playing", "paused"):
+            self._fail(d.get("message") or st or "ERROR")
+            return self._dirty()
+        sig = (d.get("song"), d.get("artist"), d.get("device"),
+               bool(d.get("is_playing")))
+        prev = self.sig
+        self.data = d
+        self.err = ""
+        self.sig = sig
+        self._plan(d)
+        if sig != prev:
+            # new track / device / play state -> one clean full repaint
+            self.pos = 0
+            self.dir = 1
+            self.frame_at = now
+            self.hold_until = time.ticks_add(now, self.HOLD_MS)
+            self.dirty_full = True
         else:
-            self.err = (d.get("message") or st or "ERROR")[:22]
-            self.data = None
-            self.long = False
-            self.animating = False
-        return True
+            # same track: only the small progress region changes
+            self.dirty_prog = True
+        return self._dirty()
 
     def tick(self, app, now):
         redraw = self.refresh(app)
@@ -554,6 +579,7 @@ class SpotifyPage(BasePage):
         if time.ticks_diff(now, self.frame_at) < self.FRAME_MS:
             return redraw
         self.frame_at = now
+        moved = False
         if time.ticks_diff(now, self.hold_until) >= 0:
             self.pos += self.dir
             if self.pos >= self.max_off:
@@ -564,23 +590,30 @@ class SpotifyPage(BasePage):
                 self.pos = 0
                 self.dir = 1
                 self.hold_until = time.ticks_add(now, self.HOLD_MS)
-        return True
+            moved = True
+        if moved:
+            self.dirty_lines = True
+        return redraw or moved
 
     def _long(self, s, font):
         return u.tw(s, font) > u.W - 12
 
     def _plan(self, d):
         self.max_off = 0
-        for s, font in ((d.get("song") or "-", u.F_SM),
-                        (d.get("artist") or "-", u.F_TINY),
-                        ("ON " + (d.get("device") or "-"), u.F_TINY)):
+        song, artist, dev = self._lines(d)
+        for s, font in ((song, u.F_JA), (artist, u.F_JA), (dev, u.F_TINY)):
             w = u.tw(s, font)
             if w > u.W - 12 and w - (u.W - 12) > self.max_off:
                 self.max_off = w - (u.W - 12)
         self.long = self.max_off > 0
 
+    def _lines(self, d):
+        return (d.get("song") or "-",
+                d.get("artist") or "-",
+                "ON " + (d.get("device") or "-"))
+
     def _scroll(self, s, font, y, color):
-        """One line, clipped by the screen: slide sideways and back."""
+        """One clipped line: slide sideways, then back from the other side."""
         w = u.tw(s, font)
         if w <= u.W - 12:
             u.text1(s, font, (u.W - w) // 2, y, color)
@@ -592,38 +625,63 @@ class SpotifyPage(BasePage):
         u.text1(s, font, 6 - off, y, color)
 
     def draw(self, app):
+        if self.dirty_full:
+            self.dirty_full = False
+            self.dirty_lines = False
+            self.dirty_prog = False
+            self._draw_full(app)
+            return
+        if self.dirty_lines:
+            self.dirty_lines = False
+            self._draw_lines()
+        if self.dirty_prog:
+            self.dirty_prog = False
+            self._draw_prog()
+
+    def _draw_full(self, app):
         u.clear()
         d = self.data
         playing = bool(d and d.get("is_playing"))
         u.header(self.title, app.idx, len(app.pages),
                  u.GREEN if playing else u.ACCENT)
+        u.dots(len(app.pages), app.idx)
         if self.err:
             u.ctext("SPOTIFY", u.F_SM, 34, u.MUTED)
             u.ctext(self.err, u.F_TINY, 54, u.RED)
             u.ctext("hub on port 8765?", u.F_TINY, 72, u.LINE)
             u.ctext("hold 3s: back", u.F_TINY, 104, u.MUTED)
-            u.dots(len(app.pages), app.idx)
             return
         if not d:
             u.ctext("LOADING...", u.F_SM, 58, u.MUTED)
-            u.dots(len(app.pages), app.idx)
             return
+        self._draw_lines()
+        self._draw_prog()
 
-        self._scroll(d.get("song") or "-", u.F_SM, 30, u.WHITE)
-        self._scroll(d.get("artist") or "-", u.F_TINY, 48, u.MUTED)
-        dev = d.get("device") or "-"
-        if self._long("ON " + dev, u.F_TINY):
-            self._scroll("ON " + dev, u.F_TINY, 64, u.ACCENT)
+    def _draw_lines(self):
+        d = self.data
+        if not d:
+            return
+        u.fill(0, self.BAND_Y, u.W, self.BAND_H, u.BLACK)
+        song, artist, dev = self._lines(d)
+        self._scroll(song, u.F_JA, 22, u.WHITE)
+        self._scroll(artist, u.F_JA, 47, u.MUTED)
+        if self._long(dev, u.F_TINY):
+            self._scroll(dev, u.F_TINY, 73, u.ACCENT)
         else:
-            u.text("ON", u.F_TINY, 6, 64, u.LINE)
-            u.text(dev[:16], u.F_TINY, 24, 64, u.ACCENT)
+            u.text("ON", u.F_TINY, 6, 73, u.LINE)
+            u.text(dev[3:][:16], u.F_TINY, 24, 73, u.ACCENT)
 
+    def _draw_prog(self):
+        d = self.data
+        if not d:
+            return
+        u.fill(0, self.PROG_Y, u.W, self.PROG_H, u.BLACK)
+        playing = bool(d.get("is_playing"))
         dur = int(d.get("duration_ms") or 0)
         pos = int(d.get("progress_ms") or 0)
         pct = (pos * 100 // dur) if dur else 0
-        u.bar(6, 82, 116, 5, pct, u.GREEN if playing else u.LINE)
-        u.text(mmss(pos), u.F_TINY, 6, 90, u.MUTED)
-        u.rtext(mmss(dur), u.F_TINY, 122, 90, u.MUTED)
+        u.bar(6, 85, 116, 5, pct, u.GREEN if playing else u.LINE)
+        u.text(mmss(pos), u.F_TINY, 6, 92, u.MUTED)
+        u.rtext(mmss(dur), u.F_TINY, 122, 92, u.MUTED)
         u.ctext("PLAYING" if playing else "PAUSED", u.F_TINY, 104,
                 u.GREEN if playing else u.AMBER)
-        u.dots(len(app.pages), app.idx)

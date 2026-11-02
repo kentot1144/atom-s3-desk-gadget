@@ -11,9 +11,13 @@ small Python hub that runs on a PC in the same LAN.
 - **Alert LED** on GPIO5 flashes when a critical service is down.
 - **Auto-brightness** from the on-board light sensor (GPIO6).
 - **Spotify screen**: shows track, artist and the playing device, with
-  play/pause, next and previous controls on the device button. Long titles
-  slide sideways and bounce back like a radio VFD (30 fps animation), while
-  track data refreshes at 5 fps.
+  play/pause, next and previous controls on the device button. Track and artist
+  use a CJK font (Latin, kana and kanji) on a single clipped line; long text
+  slides sideways and bounces back like a radio VFD (30 fps animation), while
+  track data refreshes at 5 fps. Only the text band and the progress area are
+  repainted, so the screen does not flash.
+- **Several remembered Wi-Fi networks**: list every SSID/password pair you use
+  and the device tries them in turn until one connects.
 
 ## Two UI modes
 
@@ -56,7 +60,18 @@ tools/               flashing and network diagnostics helpers
 1. Install the UIFlow2 firmware on the AtomS3 (the stock environment can be
    restored at any time from UIFlow2).
 2. Copy `firmware/config.json.example` to `firmware/config.json` and fill in
-   your Wi-Fi SSID/password, location and the hub URL(s).
+   your location, the hub URL(s) and one or more Wi-Fi networks:
+
+   ```json
+   "wifi": [
+     { "ssid": "home", "password": "..." },
+     { "ssid": "phone hotspot", "password": "..." }
+   ]
+   ```
+
+   A single object (`{"ssid": ..., "password": ...}`) still works. When the
+   device is offline it cycles through the list every few seconds and
+   remembers the network that worked.
 3. Flash with:
 
    ```bat

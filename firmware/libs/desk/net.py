@@ -58,9 +58,11 @@ def http_body(raw):
 class Net:
     def __init__(self, cfg):
         self.cfg = cfg
-        wifi = cfg.get("wifi") or {}
-        self.ssid = wifi.get("ssid", "")
-        self.password = wifi.get("password", "")
+        self.nets = self._parse_nets(cfg.get("wifi"))
+        self.ssid = self.nets[0][0] if self.nets else ""
+        self.password = self.nets[0][1] if self.nets else ""
+        self.net_idx = 0
+        self.try_ssid = ""
         self.wlan = network.WLAN(network.STA_IF)
         self.connected = False
         self.time_synced = False
@@ -93,6 +95,26 @@ class Net:
         if self.hub_targets:
             self.hub_host, self.hub_port, self.hub_path = self.hub_targets[0]
 
+    def _parse_nets(self, wifi):
+        """Accept a single network dict, a list, or {"networks": [...]}."""
+        if not wifi:
+            return []
+        if isinstance(wifi, dict) and isinstance(wifi.get("networks"), list):
+            src = wifi["networks"]
+        elif isinstance(wifi, list):
+            src = wifi
+        elif isinstance(wifi, dict):
+            src = [wifi]
+        else:
+            return []
+        out = []
+        for w in src:
+            if isinstance(w, dict):
+                ssid = w.get("ssid") or ""
+                if ssid:
+                    out.append((ssid, w.get("password") or ""))
+        return out
+
     def _parse_hub(self, url):
         if not url:
             return None
@@ -123,6 +145,14 @@ class Net:
             up = False
         self.connected = up
         if up:
+            if self.try_ssid:
+                # remember which network worked so reconnects retry it first
+                for i, n in enumerate(self.nets):
+                    if n[0] == self.try_ssid:
+                        self.net_idx = i
+                        self.ssid, self.password = n
+                        break
+                self.try_ssid = ""
             if not self.time_synced and time.ticks_diff(now, self.ntp_next) >= 0:
                 self._sync_ntp(now)
         elif time.ticks_diff(now, self.next_try) >= 0:
@@ -130,7 +160,7 @@ class Net:
 
     def _connect(self, now):
         self.next_try = time.ticks_add(now, 3000)
-        if not self.ssid:
+        if not self.nets:
             return
         try:
             if not self.wlan.active():
@@ -149,13 +179,20 @@ class Net:
         if st == 1001 or st == 1010:
             self.next_try = time.ticks_add(now, 2000)
             return
+        ssid, password = self.nets[self.net_idx]
         try:
-            self.wlan.connect(self.ssid, self.password)
+            self.wlan.connect(ssid, password)
+            self.try_ssid = ssid
+            self.ssid = ssid
+            self.password = password
             self.weather_err = ""
-            self.next_try = time.ticks_add(now, 5000)
+            # try the next known network if this one does not come up
+            self.net_idx = (self.net_idx + 1) % len(self.nets)
+            self.next_try = time.ticks_add(now, 6000)
         except Exception as e:
             self.weather_err = "wifi " + str(e)
-            self.next_try = time.ticks_add(now, 30000)
+            self.net_idx = (self.net_idx + 1) % len(self.nets)
+            self.next_try = time.ticks_add(now, 8000)
 
     def _sync_ntp(self, now):
         self.ntp_next = time.ticks_add(now, 30000)

@@ -26,6 +26,10 @@ def load(path=PATH):
 
     out = {}
     for k, v in DEFAULTS.items():
+        if k == "wifi" and isinstance(cfg.get(k), list):
+            # several remembered networks: [{"ssid": ..., "password": ...}, ...]
+            out[k] = cfg[k]
+            continue
         if isinstance(v, dict):
             merged = dict(v)
             got = cfg.get(k)

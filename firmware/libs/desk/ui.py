@@ -9,6 +9,12 @@ F_MD = F.DejaVu18
 F_MED = F.DejaVu24
 F_BIG = F.DejaVu40
 
+# 24 px CJK font: Latin, kana and kanji (Japanese / Chinese / Korean).
+try:
+    F_JA = F.EFontJA24
+except Exception:
+    F_JA = F_MED
+
 W = 128
 H = 128
 
@@ -31,6 +37,11 @@ PURPLE = 0xA78BFA
 
 def clear(color=BLACK):
     LCD.fillScreen(color)
+
+
+def fill(x, y, w, h, color=BLACK):
+    """Fill a rectangle (used for flicker-free partial redraws)."""
+    LCD.fillRect(int(x), int(y), int(w), int(h), color)
 
 
 def tw(s, font):

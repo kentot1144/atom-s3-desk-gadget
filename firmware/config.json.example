@@ -1,8 +1,8 @@
 {
-  "wifi": {
-    "ssid": "YOUR_WIFI_SSID",
-    "password": "YOUR_WIFI_PASSWORD"
-  },
+  "wifi": [
+    { "ssid": "YOUR_WIFI_SSID", "password": "YOUR_WIFI_PASSWORD" },
+    { "ssid": "YOUR_HOTSPOT_SSID", "password": "YOUR_HOTSPOT_PASSWORD" }
+  ],
   "location": { "lat": 0.0, "lon": 0.0, "tz": 0, "name": "Your City" },
   "hub": { "urls": ["http://192.168.1.10:8765", "http://YOUR_SECOND_HUB_HOST:8765"] },
   "display": {
