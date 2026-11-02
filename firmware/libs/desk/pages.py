@@ -23,6 +23,7 @@ def pct_color(p):
 
 class BasePage:
     title = ""
+    animating = False
 
     def enter(self, app):
         pass
@@ -487,20 +488,27 @@ class SpotifyPage(BasePage):
 
     title = "SPOTIFY"
     REFRESH_MS = 200
-    SCROLL_MS = 55
-    GAP = 22
+    FRAME_MS = 33
+    HOLD_MS = 1000
 
     def __init__(self):
         self.at = -1000000
         self.data = None
         self.err = ""
-        self.scroll_at = 0
-        self.scroll_pos = 0
+        self.frame_at = 0
+        self.pos = 0
+        self.dir = 1
+        self.hold_until = 0
+        self.max_off = 0
+        self.long = False
 
     def enter(self, app):
-        self.at = time.ticks_ms() - self.REFRESH_MS
-        self.scroll_at = time.ticks_ms()
-        self.scroll_pos = 0
+        now = time.ticks_ms()
+        self.at = now - self.REFRESH_MS
+        self.frame_at = now
+        self.pos = 0
+        self.dir = 1
+        self.hold_until = time.ticks_add(now, self.HOLD_MS)
         self.refresh(app)
 
     def action(self, app):
@@ -515,56 +523,73 @@ class SpotifyPage(BasePage):
         if not d:
             self.err = (app.http_err or "HUB OFFLINE")[:22]
             self.data = None
+            self.long = False
+            self.animating = False
             return True
         st = d.get("status")
         if st in ("success", "not_playing", "paused"):
             prev = self.data or {}
             self.data = d
             self.err = ""
+            self._plan(d)
             if (d.get("song"), d.get("artist"), d.get("device")) != (
                     prev.get("song"), prev.get("artist"), prev.get("device")):
-                self.scroll_pos = 0
-                self.scroll_at = now
+                self.pos = 0
+                self.dir = 1
+                self.frame_at = now
+                self.hold_until = time.ticks_add(now, self.HOLD_MS)
         else:
             self.err = (d.get("message") or st or "ERROR")[:22]
             self.data = None
+            self.long = False
+            self.animating = False
         return True
 
     def tick(self, app, now):
         redraw = self.refresh(app)
-        if self._animate(now):
-            redraw = True
-        return redraw
+        if not self.long:
+            self.animating = False
+            return redraw
+        self.animating = True
+        if time.ticks_diff(now, self.frame_at) < self.FRAME_MS:
+            return redraw
+        self.frame_at = now
+        if time.ticks_diff(now, self.hold_until) >= 0:
+            self.pos += self.dir
+            if self.pos >= self.max_off:
+                self.pos = self.max_off
+                self.dir = -1
+                self.hold_until = time.ticks_add(now, self.HOLD_MS)
+            elif self.pos <= 0:
+                self.pos = 0
+                self.dir = 1
+                self.hold_until = time.ticks_add(now, self.HOLD_MS)
+        return True
 
     def _long(self, s, font):
         return u.tw(s, font) > u.W - 12
 
-    def _animating(self):
-        d = self.data
-        if not d:
-            return False
-        return (self._long(d.get("song") or "-", u.F_SM) or
-                self._long(d.get("artist") or "-", u.F_TINY) or
-                self._long("ON " + (d.get("device") or "-"), u.F_TINY))
-
-    def _animate(self, now):
-        if time.ticks_diff(now, self.scroll_at) < self.SCROLL_MS:
-            return False
-        self.scroll_at = now
-        if not self._animating():
-            self.scroll_pos = 0
-            return False
-        self.scroll_pos += 1
-        return True
+    def _plan(self, d):
+        self.max_off = 0
+        for s, font in ((d.get("song") or "-", u.F_SM),
+                        (d.get("artist") or "-", u.F_TINY),
+                        ("ON " + (d.get("device") or "-"), u.F_TINY)):
+            w = u.tw(s, font)
+            if w > u.W - 12 and w - (u.W - 12) > self.max_off:
+                self.max_off = w - (u.W - 12)
+        self.long = self.max_off > 0
 
     def _scroll(self, s, font, y, color):
-        """Draw left-aligned, sliding left like a VFD when it does not fit."""
+        """One line, clipped by the screen: slide sideways and back."""
         w = u.tw(s, font)
         if w <= u.W - 12:
-            u.text(s, font, (u.W - w) // 2, y, color)
+            u.text1(s, font, (u.W - w) // 2, y, color)
             return
-        x = 6 - (self.scroll_pos % (w + self.GAP))
-        u.text(s, font, x, y, color)
+        off = self.pos
+        lim = w - (u.W - 12)
+        if off > lim:
+            off = lim
+        u.text1(s, font, 6 - off, y, color)
 
     def draw(self, app):
         u.clear()

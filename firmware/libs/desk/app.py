@@ -281,4 +281,4 @@ class App:
             pg = self.pages[self.idx]
             if pg.tick(self, now):
                 pg.draw(self)
-            time.sleep_ms(20)
+            time.sleep_ms(5 if pg.animating else 20)

@@ -44,6 +44,13 @@ def text(s, font, x, y, color=WHITE, bg=BLACK):
     LCD.print(s)
 
 
+def text1(s, font, x, y, color=WHITE, bg=BLACK):
+    """Single-line text: never wraps onto a second row."""
+    LCD.setFont(font)
+    LCD.setTextColor(color, bg)
+    LCD.drawString(s, int(x), int(y))
+
+
 def ctext(s, font, y, color=WHITE, bg=BLACK):
     text(s, font, (W - tw(s, font)) // 2, y, color, bg)
 

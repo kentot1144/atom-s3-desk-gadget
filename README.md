@@ -12,7 +12,8 @@ small Python hub that runs on a PC in the same LAN.
 - **Auto-brightness** from the on-board light sensor (GPIO6).
 - **Spotify screen**: shows track, artist and the playing device, with
   play/pause, next and previous controls on the device button. Long titles
-  scroll like a radio VFD display, refreshed at 5 fps.
+  slide sideways and bounce back like a radio VFD (30 fps animation), while
+  track data refreshes at 5 fps.
 
 ## Two UI modes
 
