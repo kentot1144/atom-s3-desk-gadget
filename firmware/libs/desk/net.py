@@ -176,7 +176,7 @@ class Net:
                     s.sendto(b"ATOMDISCOVER", (bc, self.disc_port))
                 except Exception:
                     pass
-            end = time.ticks_add(now, 2000)
+            end = time.ticks_add(time.ticks_ms(), 2000)
             while time.ticks_diff(end, time.ticks_ms()) > 0:
                 try:
                     data, addr = s.recvfrom(256)
