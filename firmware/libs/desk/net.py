@@ -55,6 +55,13 @@ def http_body(raw):
     return raw[i + 4:]
 
 
+def http_status(raw):
+    try:
+        return int(raw.split(b"\r\n", 1)[0].split(b" ")[1])
+    except Exception:
+        return 0
+
+
 def with_token(path, token):
     """Append the hub access key to a request path (no-op when empty)."""
     if not token:
@@ -340,6 +347,8 @@ class Net:
         try:
             raw = http_get(host, with_token(path, self.hub_token), port=port,
                            timeout=1.5, max_size=8192)
+            if http_status(raw) == 401:
+                raise ValueError("bad token")
             hub = json.loads(http_body(raw))
             self.hub = hub
             self.hub_host, self.hub_port, self.hub_path = host, port, path

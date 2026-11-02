@@ -233,6 +233,10 @@ class App:
                 p = netmod.with_token(path, self.net.hub_token)
                 raw = netmod.http_get(host, p, port=port,
                                       timeout=3.0, max_size=4096)
+                if netmod.http_status(raw) == 401:
+                    self.http_err = "BAD TOKEN"
+                    print("hub %s:%d wrong token" % (host, port))
+                    continue
                 body = netmod.http_body(raw)
                 if not body:
                     self.http_err = "EMPTY %s" % host
