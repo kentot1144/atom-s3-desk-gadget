@@ -9,7 +9,7 @@ from desk import net as netmod
 from desk.led import Alerter
 from desk.light import AutoBrightness
 
-HOLD_MS = 5000       # long press -> switch mode
+HOLD_MS = 3000       # long press -> switch mode
 CLICK_GAP_MS = 400   # silence after last click before a gesture fires
 
 

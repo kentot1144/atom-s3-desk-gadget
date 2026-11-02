@@ -28,6 +28,7 @@ _lock = threading.Lock()
 _wake = threading.Event()
 _commands = []
 _artist_cache = {}
+_last_read = 0.0
 
 _state = {
     "status": "starting",
@@ -47,7 +48,9 @@ _started = False
 
 # ---------------------------------------------------------------- public API
 def status():
+    global _last_read
     with _lock:
+        _last_read = time.time()
         return dict(_state)
 
 
@@ -261,15 +264,29 @@ async def _smtc_read():
     props = await s.try_get_media_properties_async()
     info = s.get_playback_info()
     tl = s.get_timeline_properties()
+    playing = info.playback_status == Status.PLAYING
+    pos = _td_ms(tl.position)
+    dur = _td_ms(tl.end_time)
+    if playing:
+        # Position is reported as of last_updated_time; add the elapsed
+        # time so the device gets a smooth, current progress value.
+        try:
+            age = time.time() - tl.last_updated_time.timestamp()
+            if 0 <= age < 30:
+                pos += int(age * 1000)
+        except Exception:
+            pass
+        if dur and pos > dur:
+            pos = dur
     return {
         "status": "success",
         "message": "smtc",
-        "is_playing": info.playback_status == Status.PLAYING,
+        "is_playing": playing,
         "song": (props.title or "-"),
         "artist": (props.artist or props.album_title or "-"),
         "device": _app_label(s.source_app_user_model_id),
-        "progress_ms": _td_ms(tl.position),
-        "duration_ms": _td_ms(tl.end_time),
+        "progress_ms": pos,
+        "duration_ms": dur,
     }
 
 
@@ -339,5 +356,9 @@ def _worker():
             _set(status="error", message="media session: " + _short(e))
             time.sleep(5)
 
-        _wake.wait(1.0)
+        # Refresh at 5 Hz while a device is polling the status endpoint,
+        # otherwise idle at 1 Hz to keep the PC quiet.
+        with _lock:
+            active = (time.time() - _last_read) < 3.0
+        _wake.wait(0.2 if active else 1.0)
         _wake.clear()

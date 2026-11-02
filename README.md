@@ -12,7 +12,7 @@ small Python hub that runs on a PC in the same LAN.
 - **Auto-brightness** from the on-board light sensor (GPIO6).
 - **Spotify screen**: shows track, artist and the playing device, with
   play/pause, next and previous controls on the device button. Long titles
-  scroll like a radio VFD display, refreshed about once a second.
+  scroll like a radio VFD display, refreshed at 5 fps.
 
 ## Two UI modes
 
@@ -21,7 +21,7 @@ small Python hub that runs on a PC in the same LAN.
 | Normal | clock, weather, PC stats, services (4 per page), pomodoro, mascot |
 | Spotify | track, artist, device, progress bar |
 
-Switch between them with a **5 second button hold**. In Spotify mode:
+Switch between them with a **3 second button hold**. In Spotify mode:
 
 | Gesture | Action |
 | --- | --- |

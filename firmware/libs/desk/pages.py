@@ -486,7 +486,7 @@ class SpotifyPage(BasePage):
     """Now-playing page fed by the hub's /spotify_status endpoint."""
 
     title = "SPOTIFY"
-    REFRESH_MS = 1200
+    REFRESH_MS = 200
     SCROLL_MS = 55
     GAP = 22
 
@@ -576,7 +576,7 @@ class SpotifyPage(BasePage):
             u.ctext("SPOTIFY", u.F_SM, 34, u.MUTED)
             u.ctext(self.err, u.F_TINY, 54, u.RED)
             u.ctext("hub on port 8765?", u.F_TINY, 72, u.LINE)
-            u.ctext("hold 5s: back", u.F_TINY, 104, u.MUTED)
+            u.ctext("hold 3s: back", u.F_TINY, 104, u.MUTED)
             u.dots(len(app.pages), app.idx)
             return
         if not d:
