@@ -240,7 +240,14 @@ class App:
                 self.net.hub_host, self.net.hub_port = host, port
                 return data
             except Exception as e:
-                self.http_err = str(e)[:22]
+                msg = str(e)
+                # ESP-IDF errno values: 116 = timeout, 111/104/113 = refused/reset/unreachable
+                if "116" in msg or "110" in msg:
+                    self.http_err = "HUB TIMEOUT"
+                elif "111" in msg or "104" in msg or "113" in msg:
+                    self.http_err = "HUB OFFLINE"
+                else:
+                    self.http_err = msg[:22]
                 print("spotify %s:%d %s" % (host, port, e))
         return None
 

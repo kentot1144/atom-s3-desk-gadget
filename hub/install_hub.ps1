@@ -63,6 +63,16 @@ $lnk.Description = "AtomS3 desk hub"
 $lnk.Save()
 Write-Host "Autostart: $lnkPath"
 
+# --- silent watchdog (starts the hub again if it ever stops answering) ---
+$checkVbs = Join-Path $here "check_hub.vbs"
+$taskCmd = 'wscript.exe "' + $checkVbs + '"'
+& schtasks /create /tn "AtomS3 Hub Watchdog" /tr $taskCmd /sc minute /mo 2 /f | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "Watchdog: AtomS3 Hub Watchdog (checks every 2 minutes, no window)"
+} else {
+    Write-Host "Could not register the watchdog task (optional)." -ForegroundColor Yellow
+}
+
 # --- start now ---
 Start-Process $pyw.Source -ArgumentList ('"' + (Join-Path $here "hub.py") + '"') -WorkingDirectory $here -WindowStyle Hidden
 Start-Sleep -Seconds 2

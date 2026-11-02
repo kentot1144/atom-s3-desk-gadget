@@ -42,7 +42,8 @@ hub/                 PC-side hub
   start_hub.bat      silent launcher (hands off to the VBS)
   start_hub_silent.vbs  fully window-less launcher
   start_hub_debug.bat   visible console with logs (for debugging)
-  install_hub.bat/.ps1  firewall rule + silent autostart at logon
+  check_hub.vbs      silent watchdog: restarts the hub if it stops answering
+  install_hub.bat/.ps1  firewall rule + silent autostart + watchdog task
 tools/               flashing and network diagnostics helpers
 ```
 
@@ -70,11 +71,13 @@ tools/               flashing and network diagnostics helpers
 2. Copy `hub/hub_config.json.example` to `hub/hub_config.json` and replace every
    placeholder (`YOUR_...`) with your own URLs, IPs and API key.
 3. Double-click `hub/start_hub_silent.vbs` (or run `hub/install_hub.bat` once to
-   add the firewall rule and a silent autostart shortcut).
+   add the firewall rule, a silent autostart shortcut and a watchdog task).
 4. Open <http://localhost:8765/stats> to check it works.
 
 The hub is single-instance: if another copy is already listening on port 8765,
 a new copy prints a message and exits instead of competing for requests.
+`check_hub.vbs` runs every 2 minutes from Task Scheduler; if `/ping` does not
+answer, it starts the hub again. It is windowless, like the launcher.
 
 ### 3. Service checks
 
