@@ -497,6 +497,7 @@ class SpotifyPage(BasePage):
 
     def __init__(self):
         self.at = -1000000
+        self.gap = self.REFRESH_MS
         self.data = None
         self.err = ""
         self.sig = None
@@ -540,10 +541,15 @@ class SpotifyPage(BasePage):
 
     def refresh(self, app, force=False):
         now = time.ticks_ms()
-        if not force and time.ticks_diff(now, self.at) < self.REFRESH_MS:
+        if not force and time.ticks_diff(now, self.at) < self.gap:
             return self._dirty()
         self.at = now
+        t0 = now
         d = app._http_get("/spotify_status")
+        # A hub on the internet answers in tens of milliseconds; poll less
+        # often then so the marquee keeps its frame rate.
+        took = time.ticks_diff(time.ticks_ms(), t0)
+        self.gap = self.REFRESH_MS if took < 60 else 500
         if not d:
             self._fail(app.http_err or "HUB OFFLINE")
             return self._dirty()

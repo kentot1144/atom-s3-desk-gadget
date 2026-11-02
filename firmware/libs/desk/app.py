@@ -230,7 +230,8 @@ class App:
                 continue
             seen.append((host, port))
             try:
-                raw = netmod.http_get(host, path, port=port,
+                p = netmod.with_token(path, self.net.hub_token)
+                raw = netmod.http_get(host, p, port=port,
                                       timeout=3.0, max_size=4096)
                 body = netmod.http_body(raw)
                 if not body:

@@ -55,6 +55,13 @@ def http_body(raw):
     return raw[i + 4:]
 
 
+def with_token(path, token):
+    """Append the hub access key to a request path (no-op when empty)."""
+    if not token:
+        return path
+    return path + ("&" if "?" in path else "?") + "k=" + token
+
+
 class Net:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -89,6 +96,7 @@ class Net:
                         .replace("-", ":"))
         self.disc_port = int(hub_cfg.get("discovery_port", 8766))
         self.disc_at = time.ticks_ms() - 60000
+        self.hub_token = (hub_cfg.get("token") or "").strip()
         urls = hub_cfg.get("urls")
         if not urls:
             urls = [hub_cfg.get("url", "")]
@@ -330,7 +338,7 @@ class Net:
             return False
         host, port, path = self.hub_targets[self.hub_idx]
         try:
-            raw = http_get(host, path, port=port,
+            raw = http_get(host, with_token(path, self.hub_token), port=port,
                            timeout=1.5, max_size=8192)
             hub = json.loads(http_body(raw))
             self.hub = hub

@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "hub_config.json")
@@ -29,8 +30,9 @@ import spotify_bridge
 with open(CFG_PATH, "r", encoding="utf-8") as f:
     CFG = json.load(f)
 
-PORT = int(CFG.get("port", 8765))
-DISCOVERY_PORT = int(CFG.get("discovery_port", 8766))
+PORT = int(os.environ.get("ATOM_HUB_PORT") or CFG.get("port", 8765))
+DISCOVERY_PORT = int(os.environ.get("ATOM_DISCOVERY_PORT") or CFG.get("discovery_port", 8766))
+TOKEN = (os.environ.get("ATOM_HUB_TOKEN") or CFG.get("token") or "").strip()
 TARGET = CFG.get("target", "")
 SERVICES = CFG.get("services") or []
 ALERT_RULES = CFG.get("alert_rules") or []
@@ -513,22 +515,39 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authorized(self, path):
+        # /ping is open so the local watchdog keeps working without the key
+        if not TOKEN or path == "/ping":
+            return True
+        if parse_qs(urlparse(self.path).query).get("k", [""])[0] == TOKEN:
+            return True
+        return self.headers.get("X-Atom-Key", "") == TOKEN
+
     def do_GET(self):
-        if self.path.startswith("/stats"):
+        path = urlparse(self.path).path
+        if not self._authorized(path):
+            body = b'{"status":"unauthorized"}'
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/stats" or path == "/stats/":
             body = json.dumps(stats()).encode()
             self._send(body, "application/json")
-        elif self.path == "/ping":
+        elif path == "/ping":
             self._send(b"ok", "text/plain")
-        elif self.path in ("/spotify_toggle", "/spotify_next",
-                           "/spotify_previous"):
-            name = self.path.rsplit("_", 1)[-1]
+        elif path in ("/spotify_toggle", "/spotify_next",
+                      "/spotify_previous"):
+            name = path.rsplit("_", 1)[-1]
             spotify_bridge.command(name)
             body = json.dumps({
                 "status": "queued",
                 "message": "queued " + name,
             }).encode()
             self._send(body, "application/json")
-        elif self.path == "/spotify_status":
+        elif path == "/spotify_status":
             body = json.dumps(spotify_bridge.status()).encode()
             self._send(body, "application/json")
         else:

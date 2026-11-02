@@ -1,6 +1,7 @@
 {
   "port": 8765,
   "discovery_port": 8766,
+  "token": "",
   "target": "YOUR_TARGET_URL_HERE",
   "crafty": {
     "url": "https://YOUR_CRAFTY_URL_HERE:8443",

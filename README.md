@@ -114,6 +114,34 @@ a new copy prints a message and exits instead of competing for requests.
 `check_hub.vbs` runs every 2 minutes from Task Scheduler; if `/ping` does not
 answer, it starts the hub again. It is windowless, like the launcher.
 
+#### Reaching the hub over the internet
+
+Run the hub on the machine that stays on (for example a home server) and add
+its public address as a second URL. Order matters: LAN first, public second,
+so at home the device stays local.
+
+```json
+"hub": {
+  "urls": ["http://192.168.1.10:8765", "http://YOUR_DDNS_HOST:8765"],
+  "token": "CHANGE_ME_LONG_RANDOM_TOKEN",
+  "discovery_port": 8766
+}
+```
+
+Put the same string in `hub_config.json` as `"token"`. When a token is set,
+every request except `/ping` needs `?k=TOKEN`; the firmware appends it
+automatically. **Never expose the hub without a token** — port 8765 has no
+TLS, so the token is the only protection. Open the ports on the hub PC:
+
+```bat
+netsh advfirewall firewall add rule name="AtomS3 Hub 8765" dir=in action=allow protocol=TCP localport=8765
+netsh advfirewall firewall add rule name="AtomS3 Hub discovery 8766" dir=in action=allow protocol=UDP localport=8766
+```
+
+If the PC is behind a router, forward TCP 8765 to it (and UDP 8766 for LAN
+discovery). The Spotify page polls faster on a LAN and backs off to 2 Hz when
+the round trip is slow, so the marquee keeps its frame rate over the internet.
+
 ### 3. Service checks
 
 `hub/hub_config.json` describes what to monitor. Supported types:

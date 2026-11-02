@@ -7,6 +7,7 @@
   "hub": {
     "urls": ["http://192.168.1.10:8765", "http://YOUR_SECOND_HUB_HOST:8765"],
     "mac": "",
+    "token": "",
     "discovery_port": 8766
   },
   "display": {
