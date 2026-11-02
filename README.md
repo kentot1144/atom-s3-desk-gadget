@@ -11,7 +11,8 @@ small Python hub that runs on a PC in the same LAN.
 - **Alert LED** on GPIO5 flashes when a critical service is down.
 - **Auto-brightness** from the on-board light sensor (GPIO6).
 - **Spotify screen**: shows track, artist and the playing device, with
-  play/pause, next and previous controls on the device button.
+  play/pause, next and previous controls on the device button. Long titles
+  scroll like a radio VFD display, refreshed about once a second.
 
 ## Two UI modes
 

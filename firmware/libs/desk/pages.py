@@ -486,15 +486,21 @@ class SpotifyPage(BasePage):
     """Now-playing page fed by the hub's /spotify_status endpoint."""
 
     title = "SPOTIFY"
-    REFRESH_MS = 4000
+    REFRESH_MS = 1200
+    SCROLL_MS = 55
+    GAP = 22
 
     def __init__(self):
         self.at = -1000000
         self.data = None
         self.err = ""
+        self.scroll_at = 0
+        self.scroll_pos = 0
 
     def enter(self, app):
         self.at = time.ticks_ms() - self.REFRESH_MS
+        self.scroll_at = time.ticks_ms()
+        self.scroll_pos = 0
         self.refresh(app)
 
     def action(self, app):
@@ -512,15 +518,53 @@ class SpotifyPage(BasePage):
             return True
         st = d.get("status")
         if st in ("success", "not_playing", "paused"):
+            prev = self.data or {}
             self.data = d
             self.err = ""
+            if (d.get("song"), d.get("artist"), d.get("device")) != (
+                    prev.get("song"), prev.get("artist"), prev.get("device")):
+                self.scroll_pos = 0
+                self.scroll_at = now
         else:
             self.err = (d.get("message") or st or "ERROR")[:22]
             self.data = None
         return True
 
     def tick(self, app, now):
-        return self.refresh(app)
+        redraw = self.refresh(app)
+        if self._animate(now):
+            redraw = True
+        return redraw
+
+    def _long(self, s, font):
+        return u.tw(s, font) > u.W - 12
+
+    def _animating(self):
+        d = self.data
+        if not d:
+            return False
+        return (self._long(d.get("song") or "-", u.F_SM) or
+                self._long(d.get("artist") or "-", u.F_TINY) or
+                self._long("ON " + (d.get("device") or "-"), u.F_TINY))
+
+    def _animate(self, now):
+        if time.ticks_diff(now, self.scroll_at) < self.SCROLL_MS:
+            return False
+        self.scroll_at = now
+        if not self._animating():
+            self.scroll_pos = 0
+            return False
+        self.scroll_pos += 1
+        return True
+
+    def _scroll(self, s, font, y, color):
+        """Draw left-aligned, sliding left like a VFD when it does not fit."""
+        w = u.tw(s, font)
+        if w <= u.W - 12:
+            u.text(s, font, (u.W - w) // 2, y, color)
+            return
+        x = 6 - (self.scroll_pos % (w + self.GAP))
+        u.text(s, font, x, y, color)
 
     def draw(self, app):
         u.clear()
@@ -540,10 +584,14 @@ class SpotifyPage(BasePage):
             u.dots(len(app.pages), app.idx)
             return
 
-        u.ctext((d.get("song") or "-")[:18], u.F_SM, 30, u.WHITE)
-        u.ctext((d.get("artist") or "-")[:24], u.F_TINY, 48, u.MUTED)
-        u.text("ON", u.F_TINY, 6, 64, u.LINE)
-        u.text((d.get("device") or "-")[:16], u.F_TINY, 24, 64, u.ACCENT)
+        self._scroll(d.get("song") or "-", u.F_SM, 30, u.WHITE)
+        self._scroll(d.get("artist") or "-", u.F_TINY, 48, u.MUTED)
+        dev = d.get("device") or "-"
+        if self._long("ON " + dev, u.F_TINY):
+            self._scroll("ON " + dev, u.F_TINY, 64, u.ACCENT)
+        else:
+            u.text("ON", u.F_TINY, 6, 64, u.LINE)
+            u.text(dev[:16], u.F_TINY, 24, 64, u.ACCENT)
 
         dur = int(d.get("duration_ms") or 0)
         pos = int(d.get("progress_ms") or 0)

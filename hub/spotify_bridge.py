@@ -339,5 +339,5 @@ def _worker():
             _set(status="error", message="media session: " + _short(e))
             time.sleep(5)
 
-        _wake.wait(3.0)
+        _wake.wait(1.0)
         _wake.clear()
