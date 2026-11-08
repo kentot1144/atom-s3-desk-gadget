@@ -10,6 +10,7 @@ from desk.led import Alerter
 from desk.light import AutoBrightness
 
 HOLD_MS = 3000       # long press -> switch mode
+SOFT_HOLD_MS = 1000  # short hold -> page action (Spotify lyrics toggle)
 CLICK_GAP_MS = 400   # silence after last click before a gesture fires
 
 
@@ -88,6 +89,7 @@ class App:
             pages.PomodoroPage(),
             pages.PcPage(),
             pages.ServersPage(),
+            pages.RestartPage(),
             pages.MascotPage(),
             pages.StatusPage(),
         ]
@@ -117,6 +119,7 @@ class App:
         self._down = False
         self._press_at = 0
         self._hold_done = False
+        self._soft_done = False
         self._clicks = []
         self.http_err = ""
 
@@ -161,12 +164,22 @@ class App:
                 self._down = True
                 self._press_at = now
                 self._hold_done = False
+                self._soft_done = False
             elif not self._hold_done:
-                if time.ticks_diff(now, self._press_at) >= HOLD_MS:
+                held = time.ticks_diff(now, self._press_at)
+                if not self._soft_done and held >= SOFT_HOLD_MS:
+                    try:
+                        used = bool(self.pages[self.idx].soft_hold(self))
+                    except Exception as e:
+                        used = False
+                        print("soft: %s" % e)
+                    if used:
+                        self._soft_done = True
+                if held >= HOLD_MS:
                     self._switch_mode(1 - self.mode)
         elif self._down:
             self._down = False
-            if not self._hold_done:
+            if not self._hold_done and not self._soft_done:
                 self._clicks.append(now)
 
         if self._clicks and time.ticks_diff(now, self._clicks[-1]) > CLICK_GAP_MS:

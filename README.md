@@ -16,6 +16,11 @@ small Python hub that runs on a PC in the same LAN.
   slides sideways and bounces back like a radio VFD (30 fps animation), while
   track data refreshes at 5 fps. Only the text band and the progress area are
   repainted, so the screen does not flash.
+- **Synced lyrics**: hold the button for ~1 s on the Spotify screen to overlay
+  the current and next lyric line, fetched from [LRCLIB](https://lrclib.net/)
+  through the hub. Long lyric lines scroll a little faster than track titles.
+- **Remote Spotify restart**: a Normal-mode page that kills and relaunches the
+  Spotify desktop app on the hub PC, for when it hangs and needs an Alt+F4.
 - **Several remembered Wi-Fi networks**: list every SSID/password pair you use
   and the device tries them in turn until one connects.
 
@@ -23,7 +28,7 @@ small Python hub that runs on a PC in the same LAN.
 
 | Mode | Screens |
 | --- | --- |
-| Normal | clock, weather, PC stats, services (4 per page), pomodoro, mascot |
+| Normal | clock, weather, PC stats, services (4 per page), restart Spotify, pomodoro, mascot |
 | Spotify | track, artist, device, progress bar |
 
 Switch between them with a **3 second button hold**. In Spotify mode:
@@ -33,6 +38,7 @@ Switch between them with a **3 second button hold**. In Spotify mode:
 | single click | play / pause |
 | double click | next track |
 | triple click | previous track |
+| hold ~1 s | show / hide lyrics |
 
 ## Project structure
 
@@ -42,7 +48,7 @@ firmware/            MicroPython code for the AtomS3
   config.json        Wi-Fi, location, hub URLs, pins (copy from .example)
   libs/desk/         app, pages, ui, net, led, light
 hub/                 PC-side hub
-  hub.py             HTTP server: /stats, /spotify_*
+  hub.py             HTTP server: /stats, /spotify_*, /lyrics
   spotify_bridge.py  Spotify backend (SMTC by default)
   hub_config.json    services + keys (copy from .example)
   start_hub.bat      silent launcher (hands off to the VBS)
@@ -157,11 +163,19 @@ service `"critical": true` to make the device LED flash when it is down.
 
 Two backends are supported, chosen automatically:
 
-1. **Windows media sessions (SMTC)** – the default. Works with the Spotify
-   desktop app and browser tabs, no login required.
-2. **SpotAPI** – only enabled when `hub/spotify_cookies.json` exists (see
-   [Aran404/SpotAPI](https://github.com/Aran404/SpotAPI)). If the SpotAPI call
-   fails, the hub falls back to SMTC automatically.
+1. **SpotAPI** – preferred when `hub/spotify_cookies.json` exists (see
+   [Aran404/SpotAPI](https://github.com/Aran404/SpotAPI)). It talks to Spotify's
+   own connect-state endpoint, so titles and artists are canonical and the
+   lyrics lookup works in every language.
+2. **Windows media sessions (SMTC)** – the fallback. Works with the Spotify
+   desktop app and browser tabs, no login required, but Windows localizes
+   artist names (which can defeat lyrics matching).
+
+If the SpotAPI call fails, the hub falls back to SMTC and retries SpotAPI a few
+minutes later. Lyrics come from the free [LRCLIB](https://lrclib.net/) API,
+cached per track, with a duration-matched search fallback for localized names.
+`/lyrics?pos=<ms>` returns the current and next line for the device's own
+playback position.
 
 ## Security
 

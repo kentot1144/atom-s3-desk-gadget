@@ -550,6 +550,19 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/spotify_status":
             body = json.dumps(spotify_bridge.status()).encode()
             self._send(body, "application/json")
+        elif path == "/spotify_restart":
+            spotify_bridge.command("restart")
+            body = json.dumps({
+                "status": "queued",
+                "message": "restarting Spotify",
+            }).encode()
+            self._send(body, "application/json")
+        elif path == "/lyrics":
+            q = parse_qs(urlparse(self.path).query)
+            body = json.dumps(
+                spotify_bridge.lyrics((q.get("pos") or [None])[0])
+            ).encode()
+            self._send(body, "application/json")
         else:
             self._send(HTML.encode(), "text/html; charset=utf-8")
 

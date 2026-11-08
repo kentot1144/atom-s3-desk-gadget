@@ -31,6 +31,10 @@ class BasePage:
     def action(self, app):
         pass
 
+    def soft_hold(self, app):
+        """~1 s hold on the button.  Return True to swallow the click."""
+        return False
+
     def tick(self, app, now):
         return False
 
@@ -349,6 +353,78 @@ class ServersPage(BasePage):
         u.dots(len(app.pages), app.idx)
 
 
+class RestartPage(BasePage):
+    """Restart the Spotify desktop app on the hub PC (double click).
+
+    Spotify occasionally hangs with a WinError and has to be closed with
+    Alt+F4 and started again by hand.  This page does that remotely.
+    """
+
+    title = "RESTART"
+
+    def __init__(self):
+        self.state = "idle"
+        self.msg = ""
+        self.at = 0
+        self.sent = 0
+        self.dots = 0
+
+    def enter(self, app):
+        self.state = "idle"
+        self.msg = ""
+        self.at = 0
+
+    def action(self, app):
+        now = time.ticks_ms()
+        d = app._http_get("/spotify_restart")
+        if d and d.get("status") in ("queued", "success", "triggered"):
+            self.state = "busy"
+            self.msg = (d.get("message") or "restarting")[:20]
+            self.sent = now
+        else:
+            self.state = "error"
+            self.msg = (app.http_err or "HUB OFFLINE")[:18]
+            self.sent = now
+        self.at = time.ticks_add(now, -5000)
+        self.draw(app)
+
+    def tick(self, app, now):
+        if self.state == "busy":
+            if time.ticks_diff(now, self.sent) > 10000:
+                self.state = "done"
+                return True
+            if time.ticks_diff(now, self.at) > 400:
+                self.at = now
+                self.dots = (self.dots + 1) % 4
+                return True
+        elif self.state == "error" and time.ticks_diff(now, self.sent) > 5000:
+            self.state = "idle"
+            return True
+        return False
+
+    def draw(self, app):
+        u.clear()
+        u.header(self.title, app.idx, len(app.pages), u.PURPLE)
+        c = u.GREEN if self.state == "busy" else (
+            u.RED if self.state == "error" else u.ACCENT2)
+        u.LCD.fillCircle(64, 46, 19, c)
+        u.LCD.fillTriangle(58, 35, 58, 57, 76, 46, u.BLACK)
+        u.ctext("SPOTIFY", u.F_SM, 70, u.WHITE)
+        if self.state == "busy":
+            u.ctext("RESTARTING" + "." * self.dots, u.F_TINY, 90, u.AMBER)
+            u.ctext("on the hub PC", u.F_TINY, 104, u.LINE)
+        elif self.state == "done":
+            u.ctext("DONE", u.F_SM, 90, u.GREEN)
+            u.ctext("check spotify", u.F_TINY, 106, u.MUTED)
+        elif self.state == "error":
+            u.ctext(self.msg, u.F_TINY, 90, u.RED)
+            u.ctext("try again", u.F_TINY, 104, u.LINE)
+        else:
+            u.ctext("DOUBLE CLICK", u.F_TINY, 88, u.MUTED)
+            u.ctext("to restart", u.F_TINY, 102, u.LINE)
+        u.dots(len(app.pages), app.idx)
+
+
 class MascotPage(BasePage):
     """HelloATOMS3 character: breathes, blinks and reacts to the IMU.
 
@@ -489,10 +565,13 @@ class SpotifyPage(BasePage):
     title = "SPOTIFY"
     REFRESH_MS = 200
     FRAME_MS = 33
+    LYRIC_FRAME_MS = 20    # lyrics scroll a bit faster than song/artist
+    LYRIC_STEP = 2         # px per frame while a long lyric line scrolls
     HOLD_MS = 1000
+    LYRICS_MS = 900
 
     # Regions that are repainted independently (no full-screen flash).
-    BAND_Y, BAND_H = 21, 63          # song + artist + device lines
+    BAND_Y, BAND_H = 21, 63          # song + artist + device / lyrics
     PROG_Y, PROG_H = 84, 34          # progress bar, times, play state
 
     def __init__(self):
@@ -507,9 +586,15 @@ class SpotifyPage(BasePage):
         self.hold_until = 0
         self.max_off = 0
         self.long = False
+        self.step = 1
         self.dirty_full = True
         self.dirty_lines = False
         self.dirty_prog = False
+        # lyrics overlay: off by default, ~1 s hold toggles it
+        self.lyrics = False
+        self.lyr = None
+        self.lyr_at = -1000000
+        self.lyr_line = None
 
     def enter(self, app):
         now = time.ticks_ms()
@@ -521,6 +606,18 @@ class SpotifyPage(BasePage):
         self.sig = None
         self.dirty_full = True
         self.refresh(app)
+
+    def soft_hold(self, app):
+        """~1 s hold toggles the lyrics overlay."""
+        self.lyrics = not self.lyrics
+        self.lyr = None
+        self.lyr_line = None
+        self.lyr_at = time.ticks_ms() - 1000000
+        self.pos = 0
+        self.dir = 1
+        self.long = False
+        self.dirty_full = True
+        return True
 
     def action(self, app):
         self.refresh(app, force=True)
@@ -563,7 +660,8 @@ class SpotifyPage(BasePage):
         self.data = d
         self.err = ""
         self.sig = sig
-        self._plan(d)
+        if not self.lyrics:
+            self._plan(d)
         if sig != prev:
             # new track / device / play state -> one clean full repaint
             self.pos = 0
@@ -574,7 +672,34 @@ class SpotifyPage(BasePage):
         else:
             # same track: only the small progress region changes
             self.dirty_prog = True
+        if (self.lyrics
+                and time.ticks_diff(now, self.lyr_at) >= self.LYRICS_MS):
+            self._fetch_lyrics(app, now)
         return self._dirty()
+
+    def _fetch_lyrics(self, app, now):
+        self.lyr_at = now
+        pos = int((self.data or {}).get("progress_ms") or 0)
+        d = app._http_get("/lyrics?pos=%d" % pos)
+        if d:
+            self.lyr = d
+        else:
+            self.lyr = {"status": "error",
+                        "message": app.http_err or "NO HUB"}
+        line = ""
+        if self.lyr.get("status") == "success":
+            line = self.lyr.get("line") or ""
+        if line != self.lyr_line:
+            self.lyr_line = line
+            self.pos = 0
+            self.dir = 1
+            self.frame_at = now
+            self.hold_until = time.ticks_add(now, self.HOLD_MS)
+            w = u.tw(line, u.F_JA)
+            self.max_off = (w - (u.W - 12)) if w > u.W - 12 else 0
+            self.long = self.max_off > 0
+            self.step = self.LYRIC_STEP if self.long else 1
+        self.dirty_lines = True
 
     def tick(self, app, now):
         redraw = self.refresh(app)
@@ -582,12 +707,13 @@ class SpotifyPage(BasePage):
             self.animating = False
             return redraw
         self.animating = True
-        if time.ticks_diff(now, self.frame_at) < self.FRAME_MS:
+        frame = self.LYRIC_FRAME_MS if self.lyrics else self.FRAME_MS
+        if time.ticks_diff(now, self.frame_at) < frame:
             return redraw
         self.frame_at = now
         moved = False
         if time.ticks_diff(now, self.hold_until) >= 0:
-            self.pos += self.dir
+            self.pos += self.dir * self.step
             if self.pos >= self.max_off:
                 self.pos = self.max_off
                 self.dir = -1
@@ -606,6 +732,7 @@ class SpotifyPage(BasePage):
 
     def _plan(self, d):
         self.max_off = 0
+        self.step = 1
         song, artist, dev = self._lines(d)
         for s, font in ((song, u.F_JA), (artist, u.F_JA), (dev, u.F_TINY)):
             w = u.tw(s, font)
@@ -667,6 +794,9 @@ class SpotifyPage(BasePage):
         d = self.data
         if not d:
             return
+        if self.lyrics:
+            self._draw_lyrics()
+            return
         u.fill(0, self.BAND_Y, u.W, self.BAND_H, u.BLACK)
         song, artist, dev = self._lines(d)
         self._scroll(song, u.F_JA, 22, u.WHITE)
@@ -676,6 +806,33 @@ class SpotifyPage(BasePage):
         else:
             u.text("ON", u.F_TINY, 6, 73, u.LINE)
             u.text(dev[3:][:16], u.F_TINY, 24, 73, u.ACCENT)
+
+    def _draw_lyrics(self):
+        """Two lyric rows: current line, then the upcoming one."""
+        u.fill(0, self.BAND_Y, u.W, self.BAND_H, u.BLACK)
+        u.text("LYRICS", u.F_TINY, 6, 22, u.LINE)
+        d = self.lyr or {}
+        st = d.get("status")
+        if st == "success":
+            cur = (d.get("line") or "").strip()
+            nxt = (d.get("next") or "").strip()
+            if cur:
+                self._scroll(cur, u.F_JA, 33, u.WHITE)
+            else:
+                u.ctext("...", u.F_JA, 33, u.LINE)
+            if nxt:
+                if u.tw(nxt, u.F_TINY) > u.W - 12:
+                    u.text1(nxt, u.F_TINY, 6, 64, u.ACCENT)
+                else:
+                    u.ctext(nxt, u.F_TINY, 64, u.ACCENT)
+        elif st in (None, "loading"):
+            u.ctext("FETCHING...", u.F_SM, 42, u.MUTED)
+        elif st == "not_found":
+            u.ctext("NO LYRICS", u.F_SM, 38, u.MUTED)
+            u.ctext("hold 1s to hide", u.F_TINY, 58, u.LINE)
+        else:
+            u.ctext("LYRICS ERROR", u.F_SM, 38, u.RED)
+            u.ctext((d.get("message") or "")[:18], u.F_TINY, 58, u.MUTED)
 
     def _draw_prog(self):
         d = self.data
