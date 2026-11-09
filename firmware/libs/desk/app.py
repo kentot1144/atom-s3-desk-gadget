@@ -14,6 +14,7 @@ SOFT_HOLD_MS = 1000  # short hold -> page action (Spotify lyrics toggle)
 CLICK_GAP_MS = 400   # silence after last click before a gesture fires
 NOTIF_POLL_MS = 15000  # how often to ask the hub for new notifications
 NOTIF_SHOW_MS = 9000   # how long a banner stays before the next one shows
+NOTIF_MAX_AGE_S = 300  # older events go to the log but do not pop up on boot
 
 
 def _is_down(btn):
@@ -169,9 +170,13 @@ class App:
     def _tick_notif(self, now):
         """Move /events into the local log and advance the banner queue."""
         if self.net.events:
+            now_epoch = int(time.time())
             for ev in self.net.events:
                 self.notif_log.insert(0, ev)
-                self.notif_queue.append(ev)
+                ts = int(ev.get("ts") or 0)
+                # a reboot replays the hub log; do not spam old banners
+                if not ts or now_epoch - ts <= NOTIF_MAX_AGE_S:
+                    self.notif_queue.append(ev)
             self.net.events = []
             if len(self.notif_log) > 20:
                 del self.notif_log[20:]
