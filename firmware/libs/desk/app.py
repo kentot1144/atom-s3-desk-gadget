@@ -12,6 +12,8 @@ from desk.light import AutoBrightness
 HOLD_MS = 3000       # long press -> switch mode
 SOFT_HOLD_MS = 1000  # short hold -> page action (Spotify lyrics toggle)
 CLICK_GAP_MS = 400   # silence after last click before a gesture fires
+NOTIF_POLL_MS = 15000  # how often to ask the hub for new notifications
+NOTIF_SHOW_MS = 9000   # how long a banner stays before the next one shows
 
 
 def _is_down(btn):
@@ -89,6 +91,7 @@ class App:
             pages.PomodoroPage(),
             pages.PcPage(),
             pages.ServersPage(),
+            pages.NoticePage(),
             pages.RestartPage(),
             pages.MascotPage(),
             pages.StatusPage(),
@@ -114,6 +117,15 @@ class App:
         self._hold = False
         self.hub_poll = 0
         self.started = time.ticks_ms()
+
+        # notification center (hub /events -> banner + local log)
+        self.notif = None
+        self.notif_at = 0
+        self.notif_queue = []
+        self.notif_log = []
+        self.notif_dirty = False
+        self.notif_poll = time.ticks_ms() - NOTIF_POLL_MS
+        self._page_needs_draw = False
 
         # Button state (UIFlow2 API: isPressed())
         self._down = False
@@ -147,9 +159,65 @@ class App:
         self.idx = 0
         self._clicks = []
         self._hold_done = True
+        self.notif = None
+        self.notif_dirty = False
         pg = self.pages[0]
         pg.enter(self)
         pg.draw(self)
+
+    # ---- notifications -------------------------------------------------
+    def _tick_notif(self, now):
+        """Move /events into the local log and advance the banner queue."""
+        if self.net.events:
+            for ev in self.net.events:
+                self.notif_log.insert(0, ev)
+                self.notif_queue.append(ev)
+            self.net.events = []
+            if len(self.notif_log) > 20:
+                del self.notif_log[20:]
+        if (self.notif is not None and
+                time.ticks_diff(now, self.notif_at) > NOTIF_SHOW_MS):
+            self.notif = None
+            self._page_needs_draw = True
+        if self.notif is None and self.notif_queue:
+            self.notif = self.notif_queue.pop(0)
+            self.notif_at = now
+            self.notif_dirty = True
+
+    def _dismiss_notif(self):
+        self.notif = None
+        self.notif_dirty = False
+        if self.notif_queue:
+            self.notif = self.notif_queue.pop(0)
+            self.notif_at = time.ticks_ms()
+            self.notif_dirty = True
+        else:
+            self.pages[self.idx].draw(self)
+
+    def _draw_notif(self):
+        ev = self.notif
+        if not ev:
+            return
+        kind = ev.get("kind") or ""
+        col = pages.kind_color(kind)
+        u.clear(u.PANEL)
+        u.LCD.fillRect(0, 0, u.W, 3, col)
+        label = "NEW " + kind.upper().replace("_", " ")
+        u.text1(label[:20], u.F_TINY, 6, 7, col)
+        ts = int(ev.get("ts") or 0)
+        if ts:
+            t = time.localtime(ts + self.tz * 3600)
+            u.rtext("%02d:%02d" % (t[3], t[4]), u.F_TINY, 122, 7, u.MUTED)
+        ty = 24
+        for line in u.wrap(str(ev.get("title") or "NOTICE"),
+                           u.F_MD, 116, 2):
+            u.ctext(line, u.F_MD, ty, u.WHITE)
+            ty += 23
+        by = ty + 2
+        for line in u.wrap(str(ev.get("body") or ""), u.F_SM, 116, 2):
+            u.text1(line, u.F_SM, 6, by, u.MUTED)
+            by += 14
+        u.ctext("CLICK TO DISMISS", u.F_TINY, 113, u.LINE)
 
     # ---- buttons ------------------------------------------------------
     def _buttons(self):
@@ -167,7 +235,7 @@ class App:
                 self._soft_done = False
             elif not self._hold_done:
                 held = time.ticks_diff(now, self._press_at)
-                if not self._soft_done and held >= SOFT_HOLD_MS:
+                if not self._soft_done and self.notif is None and held >= SOFT_HOLD_MS:
                     try:
                         used = bool(self.pages[self.idx].soft_hold(self))
                     except Exception as e:
@@ -188,6 +256,9 @@ class App:
             self._gesture(n)
 
     def _gesture(self, n):
+        if self.notif is not None:
+            self._dismiss_notif()
+            return
         if self.mode == 1:
             if n == 1:
                 self._spotify("/spotify_toggle")
@@ -295,8 +366,22 @@ class App:
                 self._buttons()
             except Exception as e:
                 print("btn: %s" % e)
+            if time.ticks_diff(now, self.notif_poll) > NOTIF_POLL_MS:
+                self.notif_poll = now
+                self.net.maybe_events()
+            self._tick_notif(now)
+            if self._page_needs_draw:
+                self._page_needs_draw = False
+                self.pages[self.idx].draw(self)
             self.alerter.update(now, self.blink and self.net.alert)
+            if self.notif is not None and not self.net.alert:
+                self.alerter.flash((now // 250) % 2 == 0)
             pg = self.pages[self.idx]
             if pg.tick(self, now):
                 pg.draw(self)
+                if self.notif is not None:
+                    self.notif_dirty = True
+            if self.notif is not None and self.notif_dirty:
+                self.notif_dirty = False
+                self._draw_notif()
             time.sleep_ms(5 if pg.animating else 20)

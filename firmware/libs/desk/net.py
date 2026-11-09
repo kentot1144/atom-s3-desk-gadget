@@ -93,6 +93,15 @@ class Net:
         self.services = []
         self.alert = False
         self.alert_ids = []
+        self.players = []
+        self.uptime = {}
+        self.events = []
+        self.event_last = 0
+        self.events_at = time.ticks_ms() - 60000
+        self.events_err = ""
+        self.calendar = None
+        self.calendar_at = time.ticks_ms() - 600000
+        self.calendar_err = ""
         self.hub_host = ""
         self.hub_port = 8765
         self.hub_path = "/stats"
@@ -361,6 +370,8 @@ class Net:
             self.services = svcs or []
             self.alert = bool(hub.get("alert"))
             self.alert_ids = hub.get("alert_ids") or []
+            self.players = hub.get("players") or []
+            self.uptime = hub.get("svc_uptime") or {}
             return True
         except Exception as e:
             self.hub_err = "hub " + str(e)
@@ -372,6 +383,58 @@ class Net:
                 self.hub_next = time.ticks_add(now, 4000)
             else:
                 self.hub_next = time.ticks_add(now, 20000)
+            return False
+
+    def maybe_events(self, force=False):
+        """Fetch notifications posted since the last id we saw."""
+        if not self.connected or not self.hub_host:
+            return False
+        now = time.ticks_ms()
+        if not force and time.ticks_diff(now, self.events_at) < 15000:
+            return False
+        self.events_at = now
+        try:
+            path = "/events?since=%d" % self.event_last
+            raw = http_get(self.hub_host, with_token(path, self.hub_token),
+                           port=self.hub_port, timeout=2.0, max_size=6144)
+            if http_status(raw) == 401:
+                raise ValueError("bad token")
+            d = json.loads(http_body(raw))
+            last = int(d.get("last") or 0)
+            if last < self.event_last:
+                # hub restarted and its ids restarted: replay from zero
+                self.event_last = 0
+            for ev in d.get("events") or []:
+                eid = int(ev.get("id") or 0)
+                if eid > self.event_last:
+                    self.event_last = eid
+                    self.events.append(ev)
+            if len(self.events) > 10:
+                del self.events[:-10]
+            self.events_err = ""
+            return True
+        except Exception as e:
+            self.events_err = "ev " + str(e)[:16]
+            return False
+
+    def maybe_calendar(self, force=False):
+        """Next calendar event from the hub's ICS feed, every 5 minutes."""
+        if not self.connected or not self.hub_host:
+            return False
+        now = time.ticks_ms()
+        if not force and time.ticks_diff(now, self.calendar_at) < 300000:
+            return False
+        self.calendar_at = now
+        try:
+            raw = http_get(self.hub_host, with_token("/calendar", self.hub_token),
+                           port=self.hub_port, timeout=3.0, max_size=2048)
+            if http_status(raw) == 401:
+                raise ValueError("bad token")
+            self.calendar = json.loads(http_body(raw))
+            self.calendar_err = ""
+            return True
+        except Exception as e:
+            self.calendar_err = "cal " + str(e)[:16]
             return False
 
     def _legacy_services(self, hub):

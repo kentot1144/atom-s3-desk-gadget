@@ -12,5 +12,11 @@
   "services": [
     { "id": "main",     "name": "MAIN",     "type": "http", "url": "YOUR_URL_HERE", "alt": "http://YOUR_LOCAL_IP/", "note": "443/80", "critical": true },
     { "id": "vnc",      "name": "VNC",      "type": "tcp",  "port": 6080, "hosts": ["YOUR_LOCAL_IP", "YOUR_PUBLIC_DOMAIN"] }
-  ]
+  ],
+  "events": { "keep": 200 },
+  "calendar": {
+    "ics_url": "YOUR_ICS_FEED_URL_HERE",
+    "tz_offset": 9,
+    "days": 14
+  }
 }

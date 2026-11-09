@@ -131,6 +131,61 @@ def seg_time(s, y, color=WHITE, ghost=GHOST):
         x += dw + gap
 
 
+def wrap(s, font, max_w, max_lines=4):
+    """Split text into lines that fit max_w (word wrap, hard-split long words)."""
+    out = []
+    for para in str(s).split("\n"):
+        words = para.split(" ")
+        line = ""
+        for word in words:
+            while len(word) > 0 and tw(word, font) > max_w:
+                # a single huge token: cut it at the last fitting character
+                cut = len(word)
+                while cut > 1 and tw(word[:cut], font) > max_w:
+                    cut -= 1
+                if line:
+                    out.append(line)
+                    line = ""
+                out.append(word[:cut])
+                word = word[cut:]
+                if len(out) >= max_lines:
+                    return out
+            cand = word if not line else line + " " + word
+            if line and tw(cand, font) > max_w:
+                out.append(line)
+                line = word
+            else:
+                line = cand
+            if len(out) >= max_lines:
+                return out
+        if line or not words:
+            out.append(line)
+        if len(out) >= max_lines:
+            return out
+    return out[:max_lines]
+
+
+def sparkline(x, y, w, h, vals, total, color=GREEN, bg=GHOST):
+    """Draw up-count history as a small filled line graph."""
+    LCD.fillRect(x, y, w, h, bg)
+    n = len(vals)
+    if n < 1 or total <= 0:
+        return
+    if n == 1:
+        vy = y + h - 1 - int((h - 1) * max(0, min(total, vals[0])) / total)
+        LCD.fillRect(x, vy, w, 1, color)
+        return
+    step = (w - 1) / float(n - 1)
+    px = x
+    py = y + h - 1 - int((h - 1) * max(0, min(total, vals[0])) / total)
+    for i in range(1, n):
+        vx = x + int(i * step)
+        vy = y + h - 1 - int((h - 1) * max(0, min(total, vals[i])) / total)
+        LCD.drawLine(px, py, vx, vy, color)
+        LCD.fillRect(vx, vy, 2, 2, color)
+        px, py = vx, vy
+
+
 def bar(x, y, w, h, pct, color, bg=LINE):
     if pct < 0:
         pct = 0

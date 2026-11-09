@@ -75,6 +75,14 @@ class Alerter:
         except Exception:
             self.np = None
 
+    def flash(self, on):
+        """Quick notification flash, drawn after update() on the same loop."""
+        self._led(bool(on))
+        if on:
+            self._rgb(0, 48, 96)
+        else:
+            self._rgb(0, 0, 0)
+
     def update(self, now, active):
         if not active:
             if self.dim:

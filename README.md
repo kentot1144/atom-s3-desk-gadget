@@ -6,8 +6,18 @@ small Python hub that runs on a PC in the same LAN.
 ## Features
 
 - **Clock & weather** on the 128x128 screen, plus a cute idle mascot.
+- **Next calendar event**: the clock page shows a countdown to the next event
+  from any iCalendar (ICS) feed. No Google/Microsoft OAuth is needed; the hub
+  parses the feed including the common `RRULE` cases.
 - **PC stats** (CPU, RAM, GPU, uptime) served by the local hub.
 - **Service monitoring**: HTTP / TCP / Minecraft checks with alert rules.
+  Minecraft player counts come from the Crafty API, and join/leave/move events
+  are pushed into the notification center.
+- **Notification center**: `POST /notify` on the hub, and the device shows a
+  dismissable full-screen banner, flashes the LED and keeps the last 20 events
+  on a NOTICES page. Minecraft joins and leaves are generated automatically.
+- **Service uptime sparkline** on the STATUS page, plus the last time a service
+  went down.
 - **Alert LED** on GPIO5 flashes when a critical service is down.
 - **Auto-brightness** from the on-board light sensor (GPIO6).
 - **Spotify screen**: shows track, artist and the playing device, with
@@ -31,10 +41,17 @@ small Python hub that runs on a PC in the same LAN.
 
 | Mode | Screens |
 | --- | --- |
-| Normal | clock, weather, PC stats, services (4 per page), restart Spotify, pomodoro, mascot |
+| Normal | clock, weather, pomodoro, PC stats, services (4 per page), notices, restart Spotify, mascot, status |
 | Spotify | track, artist, device, progress bar |
 
-Switch between them with a **3 second button hold**. In Spotify mode:
+Switch between them with a **3 second button hold**. In Normal mode:
+
+| Gesture | Action |
+| --- | --- |
+| single click | next page |
+| double click | page action (refresh, clear notices, restart Spotify, ...) |
+
+While a notification banner is visible, any click dismisses it. In Spotify mode:
 
 | Gesture | Action |
 | --- | --- |
@@ -51,7 +68,7 @@ firmware/            MicroPython code for the AtomS3
   config.json        Wi-Fi, location, hub URLs, pins (copy from .example)
   libs/desk/         app, pages, ui, net, led, light
 hub/                 PC-side hub
-  hub.py             HTTP server: /stats, /spotify_*, /lyrics
+  hub.py             HTTP server: /stats, /events, /notify, /calendar, /spotify_*, /lyrics
   spotify_bridge.py  Spotify backend (SMTC by default)
   hub_config.json    services + keys (copy from .example)
   start_hub.bat      silent launcher (hands off to the VBS)
@@ -162,7 +179,56 @@ the round trip is slow, so the marquee keeps its frame rate over the internet.
 Each service may list several `hosts`; the first one that answers wins. Mark a
 service `"critical": true` to make the device LED flash when it is down.
 
-### 4. Spotify
+For live Minecraft numbers, add `"crafty": "<server name or id>"` to an `mc`
+service. The hub reads `/api/v2/servers/<id>/stats` from Crafty, which returns
+the running state, player count and player names. The legacy server-list ping
+(`type: "mc"` without `crafty`) still works and only reports counts.
+
+### 4. Notifications and calendar
+
+The hub keeps a small in-memory event log:
+
+- `POST /notify` with a JSON body `{"title": "...", "body": "...", "kind": "manual"}`.
+  `GET /notify?title=...&body=...&kind=...` also works.
+- `GET /events?since=<last id>` returns `{"now", "last", "events": [...]}`.
+  Event ids restart at 1 when the hub restarts; the device notices a smaller
+  `last` and replays from zero.
+- `GET /calendar` returns the next event parsed from the ICS feed, or
+  `{"status": "disabled"}` until `calendar.ics_url` is set.
+
+```bash
+curl -X POST http://192.168.1.10:8765/notify?k=TOKEN \
+     -H "Content-Type: application/json" \
+     -d '{"title":"Build done","body":"CI finished in 2m","kind":"manual"}'
+```
+
+The device polls `/events` about every 15 seconds, shows an LED-flashing banner
+for ~9 seconds (a click dismisses it), and keeps the latest 20 events on the
+NOTICES page. Double click on that page clears the local list. `events.keep`
+in `hub_config.json` controls how many events the hub retains.
+
+Minecraft joins, leaves and server moves become `mc_join`, `mc_leave` and
+`mc_move` events automatically. If a Crafty request times out, the hub keeps the
+last known player list for that server, so a slow API never looks like a mass
+disconnect.
+
+For the calendar countdown, set the feed and the fixed UTC offset:
+
+```json
+"calendar": {
+  "ics_url": "https://calendar.example.com/private/feed.ics",
+  "tz_offset": 9,
+  "days": 14
+}
+```
+
+Most calendar services offer a secret/public ICS address (Google Calendar:
+"Secret address in iCal format"; Outlook: publish calendar). The feed is fetched
+at most once a minute, and the device asks for the next event every 5 minutes.
+The common `RRULE` cases (daily, weekly with `BYDAY`, monthly, yearly,
+`INTERVAL`, `COUNT`, `UNTIL`) are expanded locally. No OAuth token is stored.
+
+### 5. Spotify
 
 Two backends are supported, chosen automatically:
 

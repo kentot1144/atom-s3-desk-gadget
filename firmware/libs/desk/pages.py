@@ -21,6 +21,38 @@ def pct_color(p):
     return u.RED
 
 
+def kind_color(kind):
+    if kind == "mc_join":
+        return u.GREEN
+    if kind == "mc_leave":
+        return u.RED
+    if kind == "mc_move":
+        return u.AMBER
+    return u.ACCENT
+
+
+def age_text(sec):
+    if sec < 60:
+        return "NOW"
+    if sec < 3600:
+        return "%dm" % (sec // 60)
+    if sec < 86400:
+        return "%dh%02dm" % (sec // 3600, (sec % 3600) // 60)
+    return "%dd%02dh" % (sec // 86400, (sec % 86400) // 3600)
+
+
+def countdown_text(sec):
+    if sec <= 0:
+        return "NOW"
+    if sec < 60:
+        return "IN <1m"
+    if sec < 3600:
+        return "IN %dm" % (sec // 60)
+    if sec < 86400:
+        return "IN %dh%02dm" % (sec // 3600, (sec % 3600) // 60)
+    return "IN %dd %dh" % (sec // 86400, (sec % 86400) // 3600)
+
+
 class BasePage:
     title = ""
     animating = False
@@ -50,9 +82,11 @@ class ClockPage(BasePage):
 
     def enter(self, app):
         app.net.maybe_weather()
+        app.net.maybe_calendar()
 
     def action(self, app):
         app.net.maybe_weather(force=True)
+        app.net.maybe_calendar(force=True)
 
     def tick(self, app, now):
         s = app.local()[5]
@@ -60,8 +94,24 @@ class ClockPage(BasePage):
             self.sec = s
             if s % 60 == 0:
                 app.net.maybe_weather()
+            if s % 300 == 0:
+                app.net.maybe_calendar()
             return True
         return False
+
+    def _cal_line(self, app):
+        c = app.net.calendar
+        if not c or c.get("status") != "ok" or c.get("none"):
+            return ""
+        title = (c.get("title") or "EVENT")[:30]
+        start = int(c.get("start") or 0)
+        end = int(c.get("end") or 0)
+        now = int(time.time())
+        if start and start > now:
+            return countdown_text(start - now) + " " + title
+        if start and end > now:
+            return "NOW " + title
+        return ""
 
     def draw(self, app):
         u.clear()
@@ -87,6 +137,9 @@ class ClockPage(BasePage):
                 u.rtext("ONLINE", u.F_SM, 120, 90, u.GREEN)
         else:
             u.rtext("NO WIFI", u.F_SM, 120, 90, u.RED)
+        cal = self._cal_line(app)
+        if cal:
+            u.text1(cal[:25], u.F_TINY, 4, 109, u.ACCENT2)
         u.dots(len(app.pages), app.idx)
 
 
@@ -487,6 +540,52 @@ class MascotPage(BasePage):
         u.dots(len(app.pages), app.idx)
 
 
+class NoticePage(BasePage):
+    """Recent hub notifications. Double click clears the local list."""
+
+    title = "NOTICES"
+
+    def __init__(self):
+        self.at = 0
+
+    def tick(self, app, now):
+        if time.ticks_diff(now, self.at) > 1000:
+            self.at = now
+            app.net.maybe_events()
+            app._tick_notif(now)
+            return True
+        return False
+
+    def action(self, app):
+        app.notif = None
+        app.notif_queue = []
+        app.notif_log = []
+        self.draw(app)
+
+    def draw(self, app):
+        u.clear()
+        u.header(self.title, app.idx, len(app.pages), u.ACCENT2)
+        log = app.notif_log or []
+        if not log:
+            u.ctext("NO NOTICES", u.F_SM, 52, u.MUTED)
+            u.ctext("double click clears", u.F_TINY, 72, u.LINE)
+            u.dots(len(app.pages), app.idx)
+            return
+        y = 25
+        for ev in log[:3]:
+            kind = ev.get("kind") or ""
+            u.LCD.fillRect(4, y + 3, 4, 4, kind_color(kind))
+            title = (ev.get("title") or "?").replace("\n", " ")
+            u.text1(title[:15], u.F_SM, 12, y, u.WHITE)
+            body = (ev.get("body") or kind.upper()).replace("\n", " ")
+            u.text1(body[:25], u.F_TINY, 12, y + 12, u.MUTED)
+            y += 24
+        if len(log) > 3:
+            u.text("+%d MORE" % (len(log) - 3), u.F_TINY, 6, 99, u.MUTED)
+        u.ctext("2x CLICK CLEAR", u.F_TINY, 110, u.LINE)
+        u.dots(len(app.pages), app.idx)
+
+
 class StatusPage(BasePage):
     title = "STATUS"
 
@@ -536,23 +635,32 @@ class StatusPage(BasePage):
             ("UPTIME", "%dd %02dh %02dm" % (up // 86400, (up % 86400) // 3600, (up % 3600) // 60)),
             ("LIGHT", light_txt),
         ]
-        y = 26
+        y = 23
         for name, val in rows:
             u.text(name, u.F_TINY, 6, y, u.MUTED)
             u.rtext(val, u.F_SM, 122, y - 1, u.WHITE)
-            y += 14
+            y += 12
+
+        uc = net.uptime or {}
+        hist = uc.get("hist") or []
+        total = int(uc.get("total") or len(net.services) or 1)
+        down = int(uc.get("down") or 0)
+        last = int(uc.get("last_down") or 0)
+        upto = total - down
+        u.text("SVC", u.F_TINY, 6, 86, u.MUTED)
+        sc = u.GREEN if down == 0 else (u.AMBER if upto > total // 2 else u.RED)
+        u.sparkline(30, 85, 92, 13, hist or [upto], total, sc)
+        if last:
+            ago = max(0, int(time.time()) - last)
+            u.text(("DOWN %s AGO" % age_text(ago))[:21], u.F_TINY, 6, 100,
+                   u.RED if down else u.AMBER)
+        else:
+            u.text("NO DOWNTIME", u.F_TINY, 6, 100, u.GREEN)
 
         hub = "OK" if net.hub else ("SET" if net.hub_host else "NONE")
         hc = u.GREEN if net.hub else u.MUTED
-        u.text("HUB", u.F_TINY, 6, 96, u.MUTED)
-        u.rtext(hub, u.F_SM, 122, 95, hc)
-        if net.alert:
-            ids = ",".join((net.alert_ids or [])[:3])
-            u.text(("ALERT " + ids)[:22], u.F_TINY, 6, 110, u.RED)
-        else:
-            err = net.hub_err or net.weather_err
-            if err:
-                u.text(err[:22], u.F_TINY, 6, 110, u.LINE)
+        u.text("HUB", u.F_TINY, 6, 110, u.MUTED)
+        u.rtext(hub, u.F_TINY, 122, 110, hc)
         u.dots(len(app.pages), app.idx)
 def mmss(ms):
     s = int(ms or 0) // 1000
