@@ -565,10 +565,12 @@ class SpotifyPage(BasePage):
     title = "SPOTIFY"
     REFRESH_MS = 200
     FRAME_MS = 33
-    LYRIC_FRAME_MS = 20    # lyrics scroll a bit faster than song/artist
-    LYRIC_STEP = 2         # px per frame while a long lyric line scrolls
+    LYRIC_FRAME_MS = 15    # fast lyric scrolling frame rate
+    LYRIC_STEP = 4         # base: 4 px per frame = ~266 px/s
+    LYRIC_STEP_MAX = 8     # only for long lines with a short time slot
+    LYRIC_HOLD_MS = 300    # short pause at each end of a lyric line
     HOLD_MS = 1000
-    LYRICS_MS = 900
+    LYRICS_MS = 200        # match the line quickly; no lyric lag
 
     # Regions that are repainted independently (no full-screen flash).
     BAND_Y, BAND_H = 21, 63          # song + artist + device / lyrics
@@ -595,6 +597,16 @@ class SpotifyPage(BasePage):
         self.lyr = None
         self.lyr_at = -1000000
         self.lyr_line = None
+        self.lyr_key = None
+        self.rows = []
+        self.row_y = 22
+        self.row_dy = 25
+        self.next_y = 73
+        self.lyr_font = u.F_JA
+        self.lyr_scroll = False
+        # local progress interpolation between hub polls
+        self.prog_base = 0
+        self.prog_at = 0
 
     def enter(self, app):
         now = time.ticks_ms()
@@ -612,6 +624,8 @@ class SpotifyPage(BasePage):
         self.lyrics = not self.lyrics
         self.lyr = None
         self.lyr_line = None
+        self.lyr_key = None
+        self.rows = []
         self.lyr_at = time.ticks_ms() - 1000000
         self.pos = 0
         self.dir = 1
@@ -660,6 +674,8 @@ class SpotifyPage(BasePage):
         self.data = d
         self.err = ""
         self.sig = sig
+        self.prog_base = int(d.get("progress_ms") or 0)
+        self.prog_at = time.ticks_ms()
         if not self.lyrics:
             self._plan(d)
         if sig != prev:
@@ -677,10 +693,22 @@ class SpotifyPage(BasePage):
             self._fetch_lyrics(app, now)
         return self._dirty()
 
+    def _pos(self):
+        """Progress for display, interpolated between hub polls."""
+        d = self.data or {}
+        pos = self.prog_base
+        if d.get("is_playing"):
+            pos += time.ticks_diff(time.ticks_ms(), self.prog_at)
+        dur = int(d.get("duration_ms") or 0)
+        if pos < 0:
+            pos = 0
+        if dur and pos > dur:
+            pos = dur
+        return pos
+
     def _fetch_lyrics(self, app, now):
         self.lyr_at = now
-        pos = int((self.data or {}).get("progress_ms") or 0)
-        d = app._http_get("/lyrics?pos=%d" % pos)
+        d = app._http_get("/lyrics?pos=%d" % self._pos())
         if d:
             self.lyr = d
         else:
@@ -689,17 +717,188 @@ class SpotifyPage(BasePage):
         line = ""
         if self.lyr.get("status") == "success":
             line = self.lyr.get("line") or ""
-        if line != self.lyr_line:
+        key = (self.lyr.get("status"), line)
+        if key != self.lyr_key:
+            self.lyr_key = key
             self.lyr_line = line
-            self.pos = 0
-            self.dir = 1
-            self.frame_at = now
-            self.hold_until = time.ticks_add(now, self.HOLD_MS)
-            w = u.tw(line, u.F_JA)
-            self.max_off = (w - (u.W - 12)) if w > u.W - 12 else 0
-            self.long = self.max_off > 0
-            self.step = self.LYRIC_STEP if self.long else 1
-        self.dirty_lines = True
+            self._plan_lyrics(time.ticks_ms())
+            self.dirty_lines = True
+        elif self.long:
+            # scrolling keeps repainting; static text stays put (no flicker)
+            self.dirty_lines = True
+
+    def _plan_lyrics(self, now):
+        """Lay out a lyric line so the whole line can be read in one slot.
+
+        Most lyrics are Latin text, so the first choice is a small font that
+        word-wraps the full line into at most four static rows.  Only CJK or
+        extremely long lines have to be split in half and scrolled.
+        """
+        s = (self.lyr_line or "").strip()
+        limit = u.W - 12
+        rows = None
+        font = u.F_JA
+        dy = 25
+        y = 22
+        scroll = False
+
+        if not s:
+            rows = [""]
+            y = 33
+        elif u.tw(s, u.F_JA) <= limit:
+            # short line: keep the big font, one centered row
+            rows = [s]
+            y = 33
+        elif self._is_latin(s):
+            # Latin: wrap in a smaller font, whole line visible, no scrolling
+            rows = self._wrap(s, u.F_SM, 4)
+            if rows:
+                font = u.F_SM
+                dy = 13
+                y = 21
+            else:
+                rows = self._wrap(s, u.F_TINY, 4)
+                if rows:
+                    font = u.F_TINY
+                    dy = 12
+                    y = 20
+
+        if not rows:
+            # CJK or a line too long even for the tiny font: split in half
+            # and scroll the two halves together
+            rows = self._split_two(s, u.F_JA)
+            font = u.F_JA
+            dy = 25
+            y = 22
+            scroll = True
+        elif len(rows) == 1:
+            # single row: center it under the LYRICS label
+            y = 33
+
+        self.rows = rows
+        self.lyr_font = font
+        self.lyr_scroll = scroll
+        self.row_y = y
+        self.row_dy = dy
+        # leave room for the next line under whatever rows we used
+        if not scroll and len(rows) == 1:
+            self.next_y = 64
+        else:
+            self.next_y = y + dy * len(rows)
+            if self.next_y < 64:
+                self.next_y = 64
+            if self.next_y > 74:
+                self.next_y = 74
+
+        w = 0
+        if scroll:
+            for row in rows:
+                rw = u.tw(row, font)
+                if rw > w:
+                    w = rw
+        self.max_off = w - limit
+        if self.max_off < 0:
+            self.max_off = 0
+        self.long = self.max_off > 0
+        self.pos = 0
+        self.dir = 1
+        self.frame_at = now
+        self.hold_until = time.ticks_add(now, self.LYRIC_HOLD_MS)
+        self.step = self._lyric_step()
+
+    def _is_latin(self, s):
+        """True when every character is Latin/Cyrillic/Greek-ish."""
+        for ch in s:
+            if ord(ch) > 0x2E7F:
+                return False
+        return True
+
+    def _wrap(self, s, font, max_rows):
+        """Greedy word-wrap into at most max_rows rows, or None if too long."""
+        limit = u.W - 12
+        words = s.split()
+        if not words:
+            return None
+        rows = []
+        cur = ""
+        for word in words:
+            # a single word wider than one row: hard-split it by width
+            while u.tw(word, font) > limit:
+                lo, hi = 1, len(word)
+                while lo < hi:
+                    m = (lo + hi + 1) // 2
+                    if u.tw(word[:m], font) <= limit:
+                        lo = m
+                    else:
+                        hi = m - 1
+                if cur:
+                    rows.append(cur)
+                    cur = ""
+                rows.append(word[:lo])
+                word = word[lo:]
+                if len(rows) > max_rows:
+                    return None
+            if not word:
+                continue
+            cand = (cur + " " + word) if cur else word
+            if u.tw(cand, font) <= limit:
+                cur = cand
+            else:
+                if cur:
+                    rows.append(cur)
+                cur = word
+                if len(rows) >= max_rows and u.tw(cur, font) > limit:
+                    return None
+            if len(rows) > max_rows:
+                return None
+        if cur:
+            rows.append(cur)
+        if len(rows) > max_rows:
+            return None
+        return rows
+
+    def _split_two(self, s, font):
+        """Split a line at its width midpoint into two balanced halves."""
+        total = u.tw(s, font)
+        if total <= u.W - 12:
+            return [s]
+        target = total // 2
+        lo, hi = 1, len(s) - 1
+        best = max(1, len(s) // 2)
+        while lo <= hi:
+            m = (lo + hi) // 2
+            if u.tw(s[:m], font) < target:
+                lo = m + 1
+            else:
+                best = m
+                hi = m - 1
+        p1 = s[:best].strip()
+        p2 = s[best:].strip()
+        if not p1:
+            return [s]
+        if not p2:
+            return [p1]
+        return [p1, p2]
+
+    def _lyric_step(self):
+        """Scroll just fast enough to reach the end before the next line."""
+        if not self.long:
+            return 1
+        step = self.LYRIC_STEP
+        na = (self.lyr or {}).get("next_at")
+        if na:
+            remain = int(na) - self._pos() - 2 * self.LYRIC_HOLD_MS
+            if remain < 200:
+                remain = 200
+            frames = remain // self.LYRIC_FRAME_MS
+            if frames < 1:
+                frames = 1
+            need = self.max_off // frames + 1
+            if need > step:
+                step = need
+        if step > self.LYRIC_STEP_MAX:
+            step = self.LYRIC_STEP_MAX
+        return step
 
     def tick(self, app, now):
         redraw = self.refresh(app)
@@ -711,17 +910,18 @@ class SpotifyPage(BasePage):
         if time.ticks_diff(now, self.frame_at) < frame:
             return redraw
         self.frame_at = now
+        hold = self.LYRIC_HOLD_MS if self.lyrics else self.HOLD_MS
         moved = False
         if time.ticks_diff(now, self.hold_until) >= 0:
             self.pos += self.dir * self.step
             if self.pos >= self.max_off:
                 self.pos = self.max_off
                 self.dir = -1
-                self.hold_until = time.ticks_add(now, self.HOLD_MS)
+                self.hold_until = time.ticks_add(now, hold)
             elif self.pos <= 0:
                 self.pos = 0
                 self.dir = 1
-                self.hold_until = time.ticks_add(now, self.HOLD_MS)
+                self.hold_until = time.ticks_add(now, hold)
             moved = True
         if moved:
             self.dirty_lines = True
@@ -745,11 +945,12 @@ class SpotifyPage(BasePage):
                 d.get("artist") or "-",
                 "ON " + (d.get("device") or "-"))
 
-    def _scroll(self, s, font, y, color):
+    def _scroll(self, s, font, y, color, center=True):
         """One clipped line: slide sideways, then back from the other side."""
         w = u.tw(s, font)
         if w <= u.W - 12:
-            u.text1(s, font, (u.W - w) // 2, y, color)
+            x = (u.W - w) // 2 if center else 6
+            u.text1(s, font, x, y, color)
             return
         off = self.pos
         lim = w - (u.W - 12)
@@ -808,23 +1009,33 @@ class SpotifyPage(BasePage):
             u.text(dev[3:][:16], u.F_TINY, 24, 73, u.ACCENT)
 
     def _draw_lyrics(self):
-        """Two lyric rows: current line, then the upcoming one."""
+        """Current lyric line (wrapped or scrolled) plus the next line."""
         u.fill(0, self.BAND_Y, u.W, self.BAND_H, u.BLACK)
-        u.text("LYRICS", u.F_TINY, 6, 22, u.LINE)
         d = self.lyr or {}
         st = d.get("status")
         if st == "success":
-            cur = (d.get("line") or "").strip()
+            rows = self.rows or [""]
             nxt = (d.get("next") or "").strip()
-            if cur:
-                self._scroll(cur, u.F_JA, 33, u.WHITE)
+            if not self.lyr_scroll and len(rows) <= 1:
+                u.text("LYRICS", u.F_TINY, 6, 22, u.LINE)
+            y = self.row_y
+            center = len(rows) == 1
+            if not rows[0]:
+                u.ctext("...", u.F_JA, y, u.LINE)
             else:
-                u.ctext("...", u.F_JA, 33, u.LINE)
+                for row in rows:
+                    if self.lyr_scroll:
+                        self._scroll(row, self.lyr_font, y, u.WHITE, False)
+                    elif center:
+                        self._scroll(row, self.lyr_font, y, u.WHITE, True)
+                    else:
+                        u.text1(row, self.lyr_font, 6, y, u.WHITE)
+                    y += self.row_dy
             if nxt:
-                if u.tw(nxt, u.F_TINY) > u.W - 12:
-                    u.text1(nxt, u.F_TINY, 6, 64, u.ACCENT)
+                if u.tw(nxt, u.F_TINY) <= u.W - 12:
+                    u.ctext(nxt, u.F_TINY, self.next_y, u.ACCENT)
                 else:
-                    u.ctext(nxt, u.F_TINY, 64, u.ACCENT)
+                    u.text1(nxt, u.F_TINY, 6, self.next_y, u.ACCENT)
         elif st in (None, "loading"):
             u.ctext("FETCHING...", u.F_SM, 42, u.MUTED)
         elif st == "not_found":
@@ -841,7 +1052,7 @@ class SpotifyPage(BasePage):
         u.fill(0, self.PROG_Y, u.W, self.PROG_H, u.BLACK)
         playing = bool(d.get("is_playing"))
         dur = int(d.get("duration_ms") or 0)
-        pos = int(d.get("progress_ms") or 0)
+        pos = self._pos()
         pct = (pos * 100 // dur) if dur else 0
         u.bar(6, 85, 116, 5, pct, u.GREEN if playing else u.LINE)
         u.text(mmss(pos), u.F_TINY, 6, 92, u.MUTED)

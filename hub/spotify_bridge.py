@@ -127,6 +127,8 @@ def lyrics(pos=None):
     plain = entry.get("plain") or []
     line = ""
     nxt = ""
+    line_at = None
+    next_at = None
     if synced:
         i = -1
         for j, row in enumerate(synced):
@@ -136,14 +138,23 @@ def lyrics(pos=None):
                 break
         if i >= 0:
             line = synced[i][1]
+            line_at = synced[i][0]
         if i + 1 < len(synced):
             nxt = synced[i + 1][1]
+            next_at = synced[i + 1][0]
+        elif i < 0:
+            nxt = synced[0][1]
+            next_at = synced[0][0]
     elif plain:
         i = 0
         if dur > 0:
             i = int(p * len(plain) / dur)
         i = max(0, min(len(plain) - 1, i))
         line = plain[i]
+        span = (dur / len(plain)) if (dur and plain) else 0
+        if span:
+            line_at = int(i * span)
+            next_at = int((i + 1) * span)
         if i + 1 < len(plain):
             nxt = plain[i + 1]
 
@@ -152,6 +163,10 @@ def lyrics(pos=None):
         "synced": bool(synced),
         "line": line,
         "next": nxt,
+        # line timing lets the device scroll a long line just fast enough
+        # to finish before the next one starts
+        "line_at": line_at,
+        "next_at": next_at,
         "track": song,
         "at": p,
     }
@@ -413,7 +428,7 @@ def _device_name(player):
 
 
 def _refresh_spotapi():
-    """Read spotapi state at most once a second, interpolating in between.
+    """Read spotapi state at most twice a second, interpolating in between.
 
     p.state performs an HTTP request to Spotify's connect-state endpoint, so
     polling it at the device's 5 Hz would be wasteful.  The progress bar is
@@ -423,7 +438,7 @@ def _refresh_spotapi():
     p = _player
     now = time.time()
 
-    if _spot_last is not None and (now - _spot_fetch_at) < 1.0:
+    if _spot_last is not None and (now - _spot_fetch_at) < 0.5:
         # Reuse the cached read: status() keeps the bar smooth by adding the
         # elapsed time to progress_ms, so don't reset its anchor here.
         return
@@ -575,30 +590,42 @@ def _lyrics_lookup(song, artist, duration_ms):
     if failed:
         return None, True
 
-    try:
-        rows = _http_json("https://lrclib.net/api/search?" +
-                          urllib.parse.urlencode({"track_name": song or ""}))
-    except Exception:
-        return None, True
-    if not isinstance(rows, list):
-        return None, False
+    # Strip extra suffixes like " (with ...)" or " - Live" for a cleaner query
+    clean_song = re.sub(r"\s*[\(\-].*$", "", song or "").strip()
+    queries = [song or ""]
+    if clean_song and clean_song.lower() != (song or "").strip().lower():
+        queries.append(clean_song)
 
-    best = None
-    best_score = None
-    target = (song or "").strip().lower()
-    for row in rows:
-        if (row.get("trackName") or "").strip().lower() != target:
-            continue
+    for q in queries:
         try:
-            gap = abs(int(row.get("duration") or 0) - dur_s)
+            rows = _http_json("https://lrclib.net/api/search?" +
+                              urllib.parse.urlencode({"track_name": q}))
         except Exception:
+            return None, True
+        if not isinstance(rows, list):
             continue
-        if gap > 5:
-            continue
-        score = (gap, 0 if row.get("syncedLyrics") else 1)
-        if best_score is None or score < best_score:
-            best, best_score = row, score
-    return (_entry_from(best) if best else None), False
+
+        best = None
+        best_score = None
+        target = q.strip().lower()
+        for row in rows:
+            rn = (row.get("trackName") or "").strip().lower()
+            if rn != target and not rn.startswith(target):
+                continue
+            try:
+                gap = abs(int(row.get("duration") or 0) - dur_s)
+            except Exception:
+                continue
+            if gap > 8:
+                continue
+            score = (gap, 0 if row.get("syncedLyrics") else 1)
+            if best_score is None or score < best_score:
+                best, best_score = row, score
+        if best:
+            e = _entry_from(best)
+            if e:
+                return e, False
+    return None, False
 
 
 def _lyrics_fetch(key, song, artist, duration_ms):

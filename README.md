@@ -18,7 +18,10 @@ small Python hub that runs on a PC in the same LAN.
   repainted, so the screen does not flash.
 - **Synced lyrics**: hold the button for ~1 s on the Spotify screen to overlay
   the current and next lyric line, fetched from [LRCLIB](https://lrclib.net/)
-  through the hub. Long lyric lines scroll a little faster than track titles.
+  through the hub. English lines word-wrap into up to four small static rows so
+  the whole line is visible without scrolling. CJK or very long lines split in
+  half and scroll together, and the speed adapts to the time left before the
+  next line so the line finishes in its slot.
 - **Remote Spotify restart**: a Normal-mode page that kills and relaunches the
   Spotify desktop app on the hub PC, for when it hangs and needs an Alt+F4.
 - **Several remembered Wi-Fi networks**: list every SSID/password pair you use
