@@ -15,6 +15,7 @@ CLICK_GAP_MS = 400   # silence after last click before a gesture fires
 NOTIF_POLL_MS = 15000  # how often to ask the hub for new notifications
 NOTIF_SHOW_MS = 9000   # how long a banner stays before the next one shows
 NOTIF_MAX_AGE_S = 300  # older events go to the log but do not pop up on boot
+HUB_POLL_MS = 10000    # stats + clock sync from the hub
 
 
 def _is_down(btn):
@@ -144,8 +145,12 @@ class App:
             return [base, max(6, base * 50 // 100), max(4, base * 15 // 100)]
         return [base, 45, 8]
 
+    def now(self):
+        """Corrected epoch: RTC time plus the hub offset when NTP is blocked."""
+        return self.net.now()
+
     def local(self):
-        return time.localtime(time.time() + self.tz * 3600)
+        return time.localtime(self.now() + self.tz * 3600)
 
     # ---- paging -------------------------------------------------------
     def next_page(self):
@@ -170,7 +175,7 @@ class App:
     def _tick_notif(self, now):
         """Move /events into the local log and advance the banner queue."""
         if self.net.events:
-            now_epoch = int(time.time())
+            now_epoch = self.now()
             for ev in self.net.events:
                 self.notif_log.insert(0, ev)
                 ts = int(ev.get("ts") or 0)
@@ -358,7 +363,7 @@ class App:
             now = time.ticks_ms()
             M5.update()
             self.net.poll(now)
-            if time.ticks_diff(now, self.hub_poll) > 30000:
+            if time.ticks_diff(now, self.hub_poll) > HUB_POLL_MS:
                 self.hub_poll = now
                 self.net.maybe_hub()
             self.pom.update(now)

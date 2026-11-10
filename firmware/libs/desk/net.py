@@ -12,7 +12,9 @@ except ImportError:
 # Resolve NTP with a numeric address: a failing DNS lookup (captive portal,
 # hotel / hotspot Wi-Fi) can block for a long time and trip the watchdog.
 NTP_HOST = "216.239.35.0"  # time.google.com
-NTP_RETRY_MS = 300000      # only retry every 5 minutes, not every 30 s
+NTP_RETRY_MS = 10000       # retry quickly until the first successful sync
+NTP_RESYNC_MS = 600000     # then only correct drift every 10 minutes
+HUB_EVERY_MS = 10000       # hub poll also keeps the clock in sync
 
 
 WX_SHORT = {
@@ -85,6 +87,7 @@ class Net:
         self.wlan = network.WLAN(network.STA_IF)
         self.connected = False
         self.time_synced = False
+        self.clock_diff = 0
         self.last_try = time.ticks_ms() - 20000
         self.next_try = 0
         self.ntp_next = time.ticks_ms()
@@ -253,7 +256,7 @@ class Net:
                         self.ssid, self.password = n
                         break
                 self.try_ssid = ""
-            if not self.time_synced and time.ticks_diff(now, self.ntp_next) >= 0:
+            if time.ticks_diff(now, self.ntp_next) >= 0:
                 self._sync_ntp(now)
         elif time.ticks_diff(now, self.next_try) >= 0:
             self._connect(now)
@@ -301,6 +304,10 @@ class Net:
             self.net_idx = (self.net_idx + 1) % len(self.nets)
             self.next_try = time.ticks_add(now, 3000)
 
+    def now(self):
+        """Current epoch, corrected when the RTC could not be set by NTP."""
+        return int(time.time()) + self.clock_diff
+
     def _sync_ntp(self, now):
         self.ntp_next = time.ticks_add(now, NTP_RETRY_MS)
         if ntptime is None:
@@ -313,6 +320,8 @@ class Net:
                 # Older builds do not accept a host argument.
                 ntptime.settime()
             self.time_synced = True
+            self.clock_diff = 0      # RTC is correct now, drop the hub offset
+            self.ntp_next = time.ticks_add(now, NTP_RESYNC_MS)
         except Exception as e:
             self.weather_err = "ntp " + str(e)
 
@@ -373,7 +382,15 @@ class Net:
             self.hub_host, self.hub_port, self.hub_path = host, port, path
             self.hub_at = time.ticks_ms()
             self.hub_err = ""
-            self.hub_next = time.ticks_add(now, 15000)
+            self.hub_next = time.ticks_add(now, HUB_EVERY_MS)
+            # The hub clock is NTP-synced by the PC. If the board RTC could not
+            # be set (NTP blocked on this Wi-Fi), follow the hub instead.
+            ts = int(hub.get("ts") or 0)
+            if ts:
+                diff = ts - int(time.time())
+                if abs(diff) > 1:
+                    self.clock_diff = diff
+                    print("clock: hub offset %+ds" % diff)
             svcs = hub.get("services")
             if svcs is None:
                 svcs = self._legacy_services(hub)

@@ -106,7 +106,7 @@ class ClockPage(BasePage):
         title = (c.get("title") or "EVENT")[:30]
         start = int(c.get("start") or 0)
         end = int(c.get("end") or 0)
-        now = int(time.time())
+        now = app.now()
         if start and start > now:
             return countdown_text(start - now) + " " + title
         if start and end > now:
@@ -651,7 +651,7 @@ class StatusPage(BasePage):
         sc = u.GREEN if down == 0 else (u.AMBER if upto > total // 2 else u.RED)
         u.sparkline(30, 85, 92, 13, hist or [upto], total, sc)
         if last:
-            ago = max(0, int(time.time()) - last)
+            ago = max(0, app.now() - last)
             u.text(("DOWN %s AGO" % age_text(ago))[:21], u.F_TINY, 6, 100,
                    u.RED if down else u.AMBER)
         else:
