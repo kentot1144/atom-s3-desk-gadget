@@ -9,6 +9,11 @@ try:
 except ImportError:
     ntptime = None
 
+# Resolve NTP with a numeric address: a failing DNS lookup (captive portal,
+# hotel / hotspot Wi-Fi) can block for a long time and trip the watchdog.
+NTP_HOST = "216.239.35.0"  # time.google.com
+NTP_RETRY_MS = 300000      # only retry every 5 minutes, not every 30 s
+
 
 WX_SHORT = {
     0: "CLEAR", 1: "MOSTLY CLEAR", 2: "PARTLY", 3: "CLOUDY",
@@ -297,11 +302,16 @@ class Net:
             self.next_try = time.ticks_add(now, 3000)
 
     def _sync_ntp(self, now):
-        self.ntp_next = time.ticks_add(now, 30000)
+        self.ntp_next = time.ticks_add(now, NTP_RETRY_MS)
         if ntptime is None:
             return
         try:
-            ntptime.settime()
+            try:
+                # Numeric host: no DNS, the UDP socket itself times out fast.
+                ntptime.settime(NTP_HOST)
+            except TypeError:
+                # Older builds do not accept a host argument.
+                ntptime.settime()
             self.time_synced = True
         except Exception as e:
             self.weather_err = "ntp " + str(e)
