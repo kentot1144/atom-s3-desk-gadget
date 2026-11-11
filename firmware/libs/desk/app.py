@@ -1,4 +1,4 @@
-import json
+import gc
 import time
 
 import M5
@@ -128,6 +128,7 @@ class App:
         self.notif_dirty = False
         self.notif_poll = time.ticks_ms() - NOTIF_POLL_MS
         self._page_needs_draw = False
+        self.gc_at = time.ticks_ms()
 
         # Button state (UIFlow2 API: isPressed())
         self._down = False
@@ -304,51 +305,16 @@ class App:
         return host, int(port or 8765)
 
     def _http_get(self, path):
-        """GET path from the hub using the same socket helper as net.py.
+        """GET path from the hub without ever blocking the UI for long.
 
-        urequests is not part of this UIFlow2 build, and the first configured
-        hub URL may be an offline machine, so every known target is tried.
+        net.hub_get() skips addresses on another subnet and backs off after a
+        failure, so an offline hub costs one short timeout instead of one per
+        configured address on every refresh.
         """
-        self.http_err = ""
-        if not self.net.connected:
-            self.http_err = "NO WIFI"
-            return None
-        targets = []
-        if self.net.hub_host:
-            targets.append((self.net.hub_host, int(self.net.hub_port or 8765)))
-        for t in self.net.hub_targets:
-            targets.append((t[0], int(t[1] or 8765)))
-        seen = []
-        for host, port in targets:
-            if (host, port) in seen:
-                continue
-            seen.append((host, port))
-            try:
-                p = netmod.with_token(path, self.net.hub_token)
-                raw = netmod.http_get(host, p, port=port,
-                                      timeout=3.0, max_size=4096)
-                if netmod.http_status(raw) == 401:
-                    self.http_err = "BAD TOKEN"
-                    print("hub %s:%d wrong token" % (host, port))
-                    continue
-                body = netmod.http_body(raw)
-                if not body:
-                    self.http_err = "EMPTY %s" % host
-                    continue
-                data = json.loads(body)
-                self.net.hub_host, self.net.hub_port = host, port
-                return data
-            except Exception as e:
-                msg = str(e)
-                # ESP-IDF errno values: 116 = timeout, 111/104/113 = refused/reset/unreachable
-                if "116" in msg or "110" in msg:
-                    self.http_err = "HUB TIMEOUT"
-                elif "111" in msg or "104" in msg or "113" in msg:
-                    self.http_err = "HUB OFFLINE"
-                else:
-                    self.http_err = msg[:22]
-                print("spotify %s:%d %s" % (host, port, e))
-        return None
+        data = self.net.hub_get(path, timeout=netmod.HUB_TIMEOUT_S,
+                                max_size=4096)
+        self.http_err = self.net.last_err
+        return data
 
     # ---- main loop ----------------------------------------------------
     def run(self):
@@ -379,19 +345,42 @@ class App:
             if time.ticks_diff(now, self.notif_poll) > NOTIF_POLL_MS:
                 self.notif_poll = now
                 self.net.maybe_events()
-            self._tick_notif(now)
+            try:
+                self._tick_notif(now)
+            except Exception as e:
+                print("notif: %s" % e)
             if self._page_needs_draw:
                 self._page_needs_draw = False
-                self.pages[self.idx].draw(self)
+                try:
+                    self.pages[self.idx].draw(self)
+                except Exception as e:
+                    print("draw: %s" % e)
             self.alerter.update(now, self.blink and self.net.alert)
             if self.notif is not None and not self.net.alert:
                 self.alerter.flash((now // 250) % 2 == 0)
             pg = self.pages[self.idx]
-            if pg.tick(self, now):
-                pg.draw(self)
+            # A page must never be able to take the whole gadget down.  A bad
+            # payload or a dead hub is a drawing problem, not a reboot.
+            try:
+                redraw = pg.tick(self, now)
+            except Exception as e:
+                redraw = False
+                print("tick: %s" % e)
+            if redraw:
+                try:
+                    pg.draw(self)
+                except Exception as e:
+                    print("draw: %s" % e)
                 if self.notif is not None:
                     self.notif_dirty = True
             if self.notif is not None and self.notif_dirty:
                 self.notif_dirty = False
-                self._draw_notif()
+                try:
+                    self._draw_notif()
+                except Exception as e:
+                    print("notif: %s" % e)
+            if (time.ticks_diff(now, self.gc_at) > 15000 or
+                    gc.mem_free() < 24000):
+                self.gc_at = now
+                gc.collect()
             time.sleep_ms(5 if pg.animating else 20)

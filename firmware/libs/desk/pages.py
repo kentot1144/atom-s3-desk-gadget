@@ -242,7 +242,7 @@ class PcPage(BasePage):
     def tick(self, app, now):
         if time.ticks_diff(now, self.at) > 1000:
             self.at = now
-            app.net.maybe_hub()
+            app.net.maybe_hub_live(now)
             return True
         return False
 
@@ -288,7 +288,12 @@ class PcPage(BasePage):
         d = up // 86400
         hh = (up % 86400) // 3600
         mm = (up % 3600) // 60
-        u.ctext("UPTIME %dd %dh %dm" % (d, hh, mm), u.F_TINY, 104, u.MUTED)
+        if app.net.hub_err:
+            # Keep the last values on screen but make it obvious they are old.
+            age = app.net.hub_age()
+            u.ctext(("OFFLINE %s" % age_text(age))[:21], u.F_TINY, 104, u.RED)
+        else:
+            u.ctext("UPTIME %dd %dh %dm" % (d, hh, mm), u.F_TINY, 104, u.MUTED)
         u.dots(len(app.pages), app.idx)
 
 
@@ -318,7 +323,7 @@ class ServersPage(BasePage):
         redraw = False
         if time.ticks_diff(now, self.at) > 1000:
             self.at = now
-            app.net.maybe_hub()
+            app.net.maybe_hub_live(now)
             redraw = True
         if time.ticks_diff(now, self.cyc) >= self.CYCLE_MS:
             self.cyc = now
@@ -342,7 +347,8 @@ class ServersPage(BasePage):
         npages = self._npages(app)
         self.slot %= npages
         head = "%s %d/%d" % (self.title, self.slot + 1, npages)
-        u.header(head, app.idx, len(app.pages), u.RED if net.alert else u.ACCENT)
+        hc = u.RED if net.alert else (u.AMBER if net.hub_err else u.ACCENT)
+        u.header(head, app.idx, len(app.pages), hc)
 
         if not svcs:
             if not net.connected:
@@ -403,6 +409,9 @@ class ServersPage(BasePage):
             if net.alert:
                 ids = ",".join((net.alert_ids or [])[:3])
                 u.ctext(("ALERT " + ids)[:22], u.F_TINY, 92, u.RED)
+        if net.hub_err:
+            u.ctext(("STALE %s" % age_text(net.hub_age()))[:20],
+                    u.F_TINY, 108, u.AMBER)
         u.dots(len(app.pages), app.idx)
 
 
@@ -592,9 +601,14 @@ class StatusPage(BasePage):
     def __init__(self):
         self.at = 0
 
+    def enter(self, app):
+        self.at = 0
+        app.net.maybe_hub(force=True)
+
     def tick(self, app, now):
-        if time.ticks_diff(now, self.at) > 2000:
+        if time.ticks_diff(now, self.at) > 1000:
             self.at = now
+            app.net.maybe_hub_live(now)
             return True
         return False
 
@@ -657,8 +671,14 @@ class StatusPage(BasePage):
         else:
             u.text("NO DOWNTIME", u.F_TINY, 6, 100, u.GREEN)
 
-        hub = "OK" if net.hub else ("SET" if net.hub_host else "NONE")
-        hc = u.GREEN if net.hub else u.MUTED
+        if net.hub and not net.hub_err:
+            hub, hc = "OK", u.GREEN
+        elif net.hub:
+            hub, hc = "STALE", u.AMBER
+        elif net.hub_host:
+            hub, hc = "OFFLINE", u.RED
+        else:
+            hub, hc = "NONE", u.MUTED
         u.text("HUB", u.F_TINY, 6, 110, u.MUTED)
         u.rtext(hub, u.F_TINY, 122, 110, hc)
         u.dots(len(app.pages), app.idx)
@@ -770,6 +790,9 @@ class SpotifyPage(BasePage):
         took = time.ticks_diff(time.ticks_ms(), t0)
         self.gap = self.REFRESH_MS if took < 60 else 500
         if not d:
+            # Do not retry in a tight loop while the hub is unreachable: the
+            # error screen is enough and the marquee must keep moving.
+            self.gap = 3000
             self._fail(app.http_err or "HUB OFFLINE")
             return self._dirty()
         st = d.get("status")

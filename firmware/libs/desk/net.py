@@ -14,7 +14,11 @@ except ImportError:
 NTP_HOST = "216.239.35.0"  # time.google.com
 NTP_RETRY_MS = 10000       # retry quickly until the first successful sync
 NTP_RESYNC_MS = 600000     # then only correct drift every 10 minutes
-HUB_EVERY_MS = 10000       # hub poll also keeps the clock in sync
+HUB_EVERY_MS = 10000       # background hub poll also keeps the clock in sync
+LIVE_EVERY_MS = 1000       # status pages fetch fresh data every second
+HUB_TIMEOUT_S = 1.2        # keep a dead hub from freezing the UI
+HUB_RETRY_MS = 15000       # wait before retrying a failed hub address
+HUB_BAD_MS = 15000         # ignore a failed address for this long
 
 
 WX_SHORT = {
@@ -34,25 +38,34 @@ def wx_short(code):
 
 
 def http_get(host, path, port=80, timeout=5.0, max_size=12288):
-    addr = socket.getaddrinfo(host, port)[0][-1]
-    s = socket.socket()
-    s.settimeout(timeout)
-    try:
-        s.connect(addr)
-        req = ("GET " + path + " HTTP/1.0\r\nHost: " + host +
-               "\r\nConnection: close\r\nUser-Agent: AtomS3-Desk\r\n\r\n")
-        s.send(req.encode())
-        parts = []
-        total = 0
-        while total < max_size:
-            d = s.recv(512)
-            if not d:
-                break
-            parts.append(d)
-            total += len(d)
-        return b"".join(parts)
-    finally:
-        s.close()
+    # A name can resolve to both IPv4 and IPv6 (or to several addresses).
+    # Try each one so a broken IPv4 route does not hide a working IPv6 one.
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    last = None
+    for fam, typ, proto, _canon, addr in infos:
+        s = socket.socket(fam, typ)
+        s.settimeout(timeout)
+        try:
+            s.connect(addr)
+            req = ("GET " + path + " HTTP/1.0\r\nHost: " + host +
+                   "\r\nConnection: close\r\nUser-Agent: AtomS3-Desk\r\n\r\n")
+            s.send(req.encode())
+            parts = []
+            total = 0
+            while total < max_size:
+                d = s.recv(512)
+                if not d:
+                    break
+                parts.append(d)
+                total += len(d)
+            return b"".join(parts)
+        except Exception as e:
+            last = e
+        finally:
+            s.close()
+    if last is not None:
+        raise last
+    return b""
 
 
 def http_body(raw):
@@ -98,6 +111,9 @@ class Net:
         self.hub_at = -1000000
         self.hub_next = 0
         self.hub_err = ""
+        self.hub_bad = {}       # (host, port) -> ticks until we retry it
+        self.last_err = ""
+        self.live_at = time.ticks_ms() - LIVE_EVERY_MS
         self.services = []
         self.alert = False
         self.alert_ids = []
@@ -208,7 +224,7 @@ class Net:
                     s.sendto(b"ATOMDISCOVER", (bc, self.disc_port))
                 except Exception:
                     pass
-            end = time.ticks_add(time.ticks_ms(), 2000)
+            end = time.ticks_add(time.ticks_ms(), 1200)
             while time.ticks_diff(end, time.ticks_ms()) > 0:
                 try:
                     data, addr = s.recvfrom(256)
@@ -360,7 +376,108 @@ class Net:
             self.weather_at = time.ticks_ms() - 480000
             return False
 
-    def maybe_hub(self, force=False):
+    def _target_ok(self, host):
+        """A LAN address is only useful on the LAN we are actually on.
+
+        The gadget moves between home Wi-Fi and phones/hotspots. Trying a
+        private 192.168.x.x hub address from another subnet can never work,
+        and doing it on every UI frame is what made the pages lag.
+        """
+        try:
+            parts = [int(x) for x in host.split(".")]
+        except Exception:
+            return True          # hostname: keep it
+        if len(parts) != 4:
+            return True
+        a, b = parts[0], parts[1]
+        if a == 127:
+            return False
+        private = (a == 10 or (a == 192 and b == 168)
+                   or (a == 172 and 16 <= b <= 31))
+        if not private:
+            return True
+        try:
+            ip, mask = self.wlan.ifconfig()[:2]
+            ip = [int(x) for x in ip.split(".")]
+            mask = [int(x) for x in mask.split(".")]
+            if len(ip) != 4 or len(mask) != 4:
+                return True
+            for i in range(4):
+                if (parts[i] & mask[i]) != (ip[i] & mask[i]):
+                    return False
+            return True
+        except Exception:
+            return True
+
+    def _hub_candidates(self, now):
+        """Hub addresses worth trying right now, best first."""
+        out = []
+        seen = []
+        if self.hub_host:
+            first = (self.hub_host, int(self.hub_port or 8765),
+                     self.hub_path or "/stats")
+            out.append(first)
+            seen.append((first[0], first[1]))
+        for t in self.hub_targets:
+            tp = (t[0], int(t[1] or 8765), t[2] or "/stats")
+            if (tp[0], tp[1]) in seen:
+                continue
+            seen.append((tp[0], tp[1]))
+            out.append(tp)
+        good = []
+        for host, port, path in out:
+            if not self._target_ok(host):
+                continue
+            if time.ticks_diff(self.hub_bad.get((host, port), 0), now) > 0:
+                continue
+            good.append((host, port, path))
+        return good
+
+    def hub_age(self):
+        """Seconds since the last successful hub answer (large if never)."""
+        return time.ticks_diff(time.ticks_ms(), self.hub_at) // 1000
+
+    def hub_get(self, path, timeout=HUB_TIMEOUT_S, max_size=4096):
+        """One short GET to the hub, skipping dead addresses.
+
+        Used by the action pages (Spotify, restart) so a failed hub cannot
+        block the button/UI loop for several seconds on every poll.
+        """
+        if not self.connected:
+            self.last_err = "NO WIFI"
+            return None
+        self.last_err = ""
+        now = time.ticks_ms()
+        for host, port, _ in self._hub_candidates(now):
+            try:
+                raw = http_get(host, with_token(path, self.hub_token),
+                               port=port, timeout=timeout, max_size=max_size)
+                if http_status(raw) == 401:
+                    self.last_err = "BAD TOKEN"
+                    continue
+                body = http_body(raw)
+                if not body:
+                    self.last_err = "EMPTY"
+                    continue
+                data = json.loads(body)
+                self.hub_host, self.hub_port = host, port
+                self.hub_bad.pop((host, port), None)
+                self.last_err = ""
+                return data
+            except Exception as e:
+                msg = str(e)
+                if "116" in msg or "110" in msg:
+                    self.last_err = "HUB TIMEOUT"
+                elif "111" in msg or "104" in msg or "113" in msg:
+                    self.last_err = "HUB OFFLINE"
+                else:
+                    self.last_err = msg[:22]
+                self.hub_bad[(host, port)] = time.ticks_add(now, HUB_BAD_MS)
+        if not self.last_err:
+            self.last_err = "HUB OFFLINE"
+        return None
+
+    def maybe_hub(self, force=False, live=False):
         if not self.connected:
             return False
         now = time.ticks_ms()
@@ -369,12 +486,20 @@ class Net:
                 self.discover(now)
             if not self.hub_targets:
                 return False
-        if not force and time.ticks_diff(now, self.hub_next) < 0:
+        if not force and not live and time.ticks_diff(now, self.hub_next) < 0:
             return False
-        host, port, path = self.hub_targets[self.hub_idx]
+        cand = self._hub_candidates(now)
+        if not cand:
+            # Every address is on another subnet or backed off.  Do not touch
+            # the network now: that would freeze the screen for nothing.
+            if not self.hub_err:
+                self.hub_err = "HUB OFFLINE"
+            self.hub_next = time.ticks_add(now, HUB_RETRY_MS)
+            return False
+        host, port, path = cand[self.hub_idx % len(cand)]
         try:
             raw = http_get(host, with_token(path, self.hub_token), port=port,
-                           timeout=1.5, max_size=8192)
+                           timeout=HUB_TIMEOUT_S, max_size=8192)
             if http_status(raw) == 401:
                 raise ValueError("bad token")
             hub = json.loads(http_body(raw))
@@ -382,6 +507,7 @@ class Net:
             self.hub_host, self.hub_port, self.hub_path = host, port, path
             self.hub_at = time.ticks_ms()
             self.hub_err = ""
+            self.hub_bad.pop((host, port), None)
             self.hub_next = time.ticks_add(now, HUB_EVERY_MS)
             # The hub clock is NTP-synced by the PC. If the board RTC could not
             # be set (NTP blocked on this Wi-Fi), follow the hub instead.
@@ -402,15 +528,21 @@ class Net:
             return True
         except Exception as e:
             self.hub_err = "hub " + str(e)
-            if time.ticks_diff(now, self.disc_at) > 20000:
-                if self.discover(now):
-                    return False
-            if len(self.hub_targets) > 1:
-                self.hub_idx = (self.hub_idx + 1) % len(self.hub_targets)
-                self.hub_next = time.ticks_add(now, 4000)
-            else:
-                self.hub_next = time.ticks_add(now, 20000)
+            self.hub_bad[(host, port)] = time.ticks_add(now, HUB_BAD_MS)
+            self.hub_idx = (self.hub_idx + 1) % len(cand)
+            if time.ticks_diff(now, self.disc_at) > 60000:
+                self.discover(now)
+            self.hub_next = time.ticks_add(now, HUB_RETRY_MS)
             return False
+
+    def maybe_hub_live(self, now):
+        """Fresh status while a live page (PC/SERVERS/STATUS) is visible."""
+        if self.hub_err and time.ticks_diff(now, self.hub_next) < 0:
+            return False
+        if time.ticks_diff(now, self.live_at) < LIVE_EVERY_MS:
+            return False
+        self.live_at = now
+        return self.maybe_hub(live=True)
 
     def maybe_events(self, force=False):
         """Fetch notifications posted since the last id we saw."""
@@ -420,13 +552,12 @@ class Net:
         if not force and time.ticks_diff(now, self.events_at) < 15000:
             return False
         self.events_at = now
+        path = "/events?since=%d" % self.event_last
+        d = self.hub_get(path, timeout=1.5, max_size=6144)
+        if not d:
+            self.events_err = self.last_err or "NO HUB"
+            return False
         try:
-            path = "/events?since=%d" % self.event_last
-            raw = http_get(self.hub_host, with_token(path, self.hub_token),
-                           port=self.hub_port, timeout=2.0, max_size=6144)
-            if http_status(raw) == 401:
-                raise ValueError("bad token")
-            d = json.loads(http_body(raw))
             last = int(d.get("last") or 0)
             if last < self.event_last:
                 # hub restarted and its ids restarted: replay from zero
@@ -452,17 +583,13 @@ class Net:
         if not force and time.ticks_diff(now, self.calendar_at) < 300000:
             return False
         self.calendar_at = now
-        try:
-            raw = http_get(self.hub_host, with_token("/calendar", self.hub_token),
-                           port=self.hub_port, timeout=3.0, max_size=2048)
-            if http_status(raw) == 401:
-                raise ValueError("bad token")
-            self.calendar = json.loads(http_body(raw))
-            self.calendar_err = ""
-            return True
-        except Exception as e:
-            self.calendar_err = "cal " + str(e)[:16]
+        d = self.hub_get("/calendar", timeout=1.5, max_size=2048)
+        if not d:
+            self.calendar_err = self.last_err or "NO HUB"
             return False
+        self.calendar = d
+        self.calendar_err = ""
+        return True
 
     def _legacy_services(self, hub):
         out = []
