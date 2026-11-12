@@ -888,6 +888,11 @@ _STATE_KEYS = ("pc", "svc", "sp", "ly", "cal", "ev")
 _STATE_LOCK = threading.Lock()
 _STATE_REV = {}
 _STATE_SIG = {}
+# The snapshot is built in the background.  Building it inline used to let a
+# slow service check stall a stream for several seconds, which the device saw
+# as a dead link and answered with a reconnect.
+_STATE_SNAP = {"data": None, "at": 0.0}
+_STATE_SNAP_LOCK = threading.Lock()
 
 
 def _state_pc(st):
@@ -964,7 +969,7 @@ def _state_sig(name, val, now):
 def state_delta(known=None):
     """Sections whose revision differs from what the client already has."""
     now = time.time()
-    sections = _state_sections()
+    sections = _state_snapshot()
     revs = {}
     with _STATE_LOCK:
         for name, val in sections.items():
@@ -979,6 +984,32 @@ def state_delta(known=None):
         if str(known.get(name)) != str(revs[name]):
             out[name] = val
     return out
+
+
+def _state_snapshot():
+    """Return the last background snapshot, building one on first use."""
+    with _STATE_SNAP_LOCK:
+        data = _STATE_SNAP["data"]
+    if data is not None:
+        return data
+    data = _state_sections()
+    with _STATE_SNAP_LOCK:
+        _STATE_SNAP["data"] = data
+        _STATE_SNAP["at"] = time.time()
+    return data
+
+
+def state_refresh_loop():
+    """Build the state snapshot once a second, off the request threads."""
+    while True:
+        try:
+            data = _state_sections()
+            with _STATE_SNAP_LOCK:
+                _STATE_SNAP["data"] = data
+                _STATE_SNAP["at"] = time.time()
+        except Exception:
+            pass
+        time.sleep(1.0)
 
 
 def calendar_loop():
@@ -1303,6 +1334,7 @@ def main():
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=discovery_loop, daemon=True).start()
     threading.Thread(target=calendar_loop, daemon=True).start()
+    threading.Thread(target=state_refresh_loop, daemon=True).start()
     spotify_bridge.start()
     try:
         srv = HubServer(("0.0.0.0", PORT), Handler)
