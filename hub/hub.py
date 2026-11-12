@@ -876,6 +876,121 @@ def stats():
     }
 
 
+# ------------------------------------------------------- authoritative state
+#
+# The device never combines endpoints by itself any more.  The hub publishes
+# one state object, split into sections with their own revision numbers.  A
+# client sends the revisions it already has and receives only what changed.
+# /stream keeps the connection open and pushes the same deltas, so the atom
+# is a display, not a second source of truth.
+
+_STATE_KEYS = ("pc", "svc", "sp", "ly", "cal", "ev")
+_STATE_LOCK = threading.Lock()
+_STATE_REV = {}
+_STATE_SIG = {}
+
+
+def _state_pc(st):
+    return {
+        "cpu": st.get("cpu") or {},
+        "mem": st.get("mem") or {},
+        "gpu": st.get("gpu") or {},
+        "uptime": int(st.get("uptime") or 0),
+        "host": st.get("host") or "",
+    }
+
+
+def _state_svc(st):
+    return {
+        "services": st.get("services") or [],
+        "alert": bool(st.get("alert")),
+        "alert_ids": st.get("alert_ids") or [],
+        "uptime": st.get("svc_uptime") or {},
+        "players": st.get("players") or [],
+    }
+
+
+def _state_sections():
+    st = stats()
+    try:
+        sp = spotify_bridge.status()
+    except Exception as e:
+        sp = {"status": "error", "message": str(e)[:40]}
+    try:
+        ly = spotify_bridge.lyrics()
+    except Exception as e:
+        ly = {"status": "error", "message": str(e)[:40]}
+    # Never block the stream on a calendar fetch: calendar_loop() warms it.
+    cal = _cal_cache["data"] if _cal_cache["data"] is not None else {
+        "status": "loading", "none": False}
+    ev = events_since(0)
+    return {
+        "pc": _state_pc(st),
+        "svc": _state_svc(st),
+        "sp": sp,
+        "ly": ly,
+        "cal": cal,
+        "ev": {"last": ev.get("last"),
+               "events": (ev.get("events") or [])[-10:]},
+    }
+
+
+def _state_sig(name, val, now):
+    """Signature used to decide whether a section really changed."""
+    if name == "sp":
+        v = dict(val)
+        # The bar is interpolated by the device; re-anchor it every 10 s.
+        v["progress_ms"] = int(v.get("progress_ms") or 0) // 10000
+        v["_bucket"] = int(now) // 10
+    elif name == "cal":
+        v = dict(val)
+        v.pop("in", None)          # countdown is computed from start + ts
+    elif name == "ly":
+        v = dict(val)
+        v.pop("at", None)          # progress is not part of the line
+    elif name == "svc":
+        v = dict(val)
+        v["services"] = [
+            {k: s.get(k) for k in ("id", "name", "kind", "port", "up",
+                                    "players", "max", "critical", "note")}
+            for s in (val.get("services") or [])
+        ]
+        v["_bucket"] = int(now) // 10   # refresh latency numbers every 10 s
+    else:
+        v = val
+    return json.dumps(v, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def state_delta(known=None):
+    """Sections whose revision differs from what the client already has."""
+    now = time.time()
+    sections = _state_sections()
+    revs = {}
+    with _STATE_LOCK:
+        for name, val in sections.items():
+            sig = _state_sig(name, val, now)
+            if _STATE_SIG.get(name) != sig:
+                _STATE_SIG[name] = sig
+                _STATE_REV[name] = _STATE_REV.get(name, 0) + 1
+            revs[name] = _STATE_REV[name]
+    out = {"ts": int(now), "rev": revs}
+    known = known or {}
+    for name, val in sections.items():
+        if str(known.get(name)) != str(revs[name]):
+            out[name] = val
+    return out
+
+
+def calendar_loop():
+    """Keep the calendar snapshot warm so state_delta() never blocks."""
+    while True:
+        try:
+            calendar_next(force=True)
+        except Exception:
+            pass
+        time.sleep(300)
+
+
 HTML = """<!doctype html><meta charset=utf-8>
 <title>AtomS3 desk hub</title>
 <style>body{font-family:system-ui;background:#111;color:#eee;padding:24px}
@@ -915,6 +1030,53 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return self.headers.get("X-Atom-Key", "") == TOKEN
 
+    def _stream(self):
+        """Push state deltas as newline-delimited JSON over one connection.
+
+        The device treats this as a display feed: the hub decides what the
+        next state is, the atom only applies it.  A delta goes out whenever a
+        section revision changes, plus a 1 s heartbeat so a dead client is
+        noticed and the device can use ts to detect a stalled link.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        try:
+            self.connection.settimeout(5.0)
+        except OSError:
+            pass
+        q = parse_qs(urlparse(self.path).query)
+        known = {}
+        for name in _STATE_KEYS:
+            rev = (q.get("r_" + name) or [""])[0]
+            if rev:
+                known[name] = rev
+        last_beat = 0.0
+        try:
+            self.wfile.flush()
+            while True:
+                delta = state_delta(known)
+                revs = delta.get("rev") or {}
+                now = time.time()
+                changed = any(str(known.get(k)) != str(v)
+                              for k, v in revs.items())
+                if changed or now - last_beat >= 1.0:
+                    self.wfile.write(
+                        json.dumps(delta, separators=(",", ":"),
+                                   default=str).encode() + b"\n")
+                    self.wfile.flush()
+                    known = dict(revs)
+                    last_beat = now
+                time.sleep(0.2)
+        except Exception:
+            # Client went away (or stalled); the thread is done.
+            pass
+        finally:
+            self.close_connection = True
+
     def do_GET(self):
         path = urlparse(self.path).path
         if not self._authorized(path):
@@ -928,6 +1090,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/stats" or path == "/stats/":
             body = json.dumps(stats()).encode()
             self._send(body, "application/json")
+        elif path in ("/state", "/state/"):
+            q = parse_qs(urlparse(self.path).query)
+            known = {}
+            for name in _STATE_KEYS:
+                rev = (q.get("r_" + name) or [""])[0]
+                if rev:
+                    known[name] = rev
+            body = json.dumps(state_delta(known), default=str).encode()
+            self._send(body, "application/json")
+        elif path in ("/stream", "/stream/"):
+            self._stream()
         elif path == "/ping":
             self._send(b"ok", "text/plain")
         elif path in ("/spotify_toggle", "/spotify_next",
@@ -1129,6 +1302,7 @@ def main():
     threading.Thread(target=sample_loop, daemon=True).start()
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=discovery_loop, daemon=True).start()
+    threading.Thread(target=calendar_loop, daemon=True).start()
     spotify_bridge.start()
     try:
         srv = HubServer(("0.0.0.0", PORT), Handler)

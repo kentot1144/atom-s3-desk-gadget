@@ -19,6 +19,11 @@ LIVE_EVERY_MS = 1000       # status pages fetch fresh data every second
 HUB_TIMEOUT_S = 1.2        # keep a dead hub from freezing the UI
 HUB_RETRY_MS = 15000       # wait before retrying a failed hub address
 HUB_BAD_MS = 15000         # ignore a failed address for this long
+STATE_LIVE_MS = 3000       # state younger than this counts as live
+STREAM_STALE_MS = 6000     # no bytes for this long -> reconnect
+STREAM_RETRY_MS = 5000     # first reconnect delay
+STREAM_RETRY_MAX_MS = 20000
+STATE_KEYS = ("pc", "svc", "sp", "ly", "cal", "ev")
 
 
 WX_SHORT = {
@@ -37,10 +42,46 @@ def wx_short(code):
     return WX_SHORT.get(code, "?")
 
 
+_DNS_TTL_MS = 600000
+_dns_cache = {}
+
+
+def _is_ipv4(host):
+    parts = host.split(".")
+    if len(parts) != 4:
+        return False
+    for part in parts:
+        if not part.isdigit() or int(part) > 255:
+            return False
+    return True
+
+
+def resolve(host, port):
+    """Cached, IPv4-first name resolution.
+
+    A failing DNS server (captive portal, hotel Wi-Fi) can block for tens of
+    seconds, which used to freeze the whole display.  Numeric addresses skip
+    DNS entirely, and a name is only looked up once every ten minutes.
+    """
+    if _is_ipv4(host):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (host, port))]
+    key = (host, port)
+    now = time.ticks_ms()
+    ent = _dns_cache.get(key)
+    if ent and time.ticks_diff(now, ent[0]) < _DNS_TTL_MS:
+        return ent[1]
+    infos = list(socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM))
+    infos.sort(key=lambda i: 0 if i[0] == socket.AF_INET else 1)
+    if len(_dns_cache) > 6:
+        _dns_cache.clear()
+    _dns_cache[key] = (now, infos)
+    return infos
+
+
 def http_get(host, path, port=80, timeout=5.0, max_size=12288):
     # A name can resolve to both IPv4 and IPv6 (or to several addresses).
     # Try each one so a broken IPv4 route does not hide a working IPv6 one.
-    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    infos = resolve(host, port)
     last = None
     for fam, typ, proto, _canon, addr in infos:
         s = socket.socket(fam, typ)
@@ -126,6 +167,23 @@ class Net:
         self.calendar = None
         self.calendar_at = time.ticks_ms() - 600000
         self.calendar_err = ""
+        # One authoritative snapshot pushed by the hub.  Every page reads
+        # from here; the atom never combines endpoints on its own.
+        now0 = time.ticks_ms()
+        self.state = {}
+        self.state_rev = {}
+        self.state_at = now0 - 1000000
+        self.state_ts = 0
+        self.state_err = ""
+        self.state_next = 0
+        self.sp_at = now0
+        self.sp_pos = 0
+        self.stream = None
+        self.stream_buf = b""
+        self.stream_last = now0
+        self.stream_next = 0
+        self.stream_retry = STREAM_RETRY_MS
+        self.stream_err = ""
         self.hub_host = ""
         self.hub_port = 8765
         self.hub_path = "/stats"
@@ -274,6 +332,7 @@ class Net:
                 self.try_ssid = ""
             if time.ticks_diff(now, self.ntp_next) >= 0:
                 self._sync_ntp(now)
+            self.stream_poll(now)
         elif time.ticks_diff(now, self.next_try) >= 0:
             self._connect(now)
 
@@ -431,13 +490,244 @@ class Net:
             if time.ticks_diff(self.hub_bad.get((host, port), 0), now) > 0:
                 continue
             good.append((host, port, path))
+        # On the home LAN the numeric hub address is fastest and does not
+        # depend on DNS or NAT hairpin; try it before the public name.
+        good.sort(key=lambda t: 0 if _is_ipv4(t[0]) else 1)
         return good
 
     def hub_age(self):
         """Seconds since the last successful hub answer (large if never)."""
         return time.ticks_diff(time.ticks_ms(), self.hub_at) // 1000
 
-    def hub_get(self, path, timeout=HUB_TIMEOUT_S, max_size=4096):
+    # -------------------------------------------------- authoritative state
+    def state_age(self):
+        return time.ticks_diff(time.ticks_ms(), self.state_at) // 1000
+
+    def state_fresh(self, ms=STATE_LIVE_MS):
+        return time.ticks_diff(time.ticks_ms(), self.state_at) <= ms
+
+    def sp_progress(self, now=None):
+        """Progress between hub anchors; the hub owns the real position."""
+        if now is None:
+            now = time.ticks_ms()
+        sp = self.state.get("sp") or {}
+        pos = self.sp_pos
+        if sp.get("is_playing"):
+            pos += time.ticks_diff(now, self.sp_at)
+        dur = int(sp.get("duration_ms") or 0)
+        if pos < 0:
+            pos = 0
+        if dur and pos > dur:
+            pos = dur
+        return pos
+
+    def _apply_events(self, ev):
+        """Merge the last few hub events without showing one twice."""
+        try:
+            last = int(ev.get("last") or 0)
+        except Exception:
+            last = 0
+        if last < self.event_last:
+            # hub restarted and its event ids restarted too
+            self.event_last = 0
+        for e in ev.get("events") or []:
+            eid = int(e.get("id") or 0)
+            if eid > self.event_last:
+                self.event_last = eid
+                self.events.append(e)
+        if len(self.events) > 10:
+            del self.events[:-10]
+
+    def _apply_state(self, j):
+        """Merge one hub snapshot/delta into the local display state."""
+        if not isinstance(j, dict):
+            return False
+        ts = int(j.get("ts") or 0)
+        if ts:
+            self.state_ts = ts
+            diff = ts - int(time.time())
+            if abs(diff) > 1:
+                self.clock_diff = diff
+        revs = j.get("rev") or {}
+        for k in STATE_KEYS:
+            if k in revs:
+                self.state_rev[k] = revs[k]
+            if k not in j:
+                continue
+            val = j[k]
+            self.state[k] = val
+            if k == "pc":
+                self.hub = val or {}
+            elif k == "svc":
+                svc = val or {}
+                self.services = svc.get("services") or []
+                self.alert = bool(svc.get("alert"))
+                self.alert_ids = svc.get("alert_ids") or []
+                self.players = svc.get("players") or []
+                self.uptime = svc.get("uptime") or {}
+            elif k == "sp":
+                self.sp_pos = int((val or {}).get("progress_ms") or 0)
+                self.sp_at = time.ticks_ms()
+            elif k == "cal":
+                self.calendar = val
+            elif k == "ev":
+                self._apply_events(val or {})
+        self.state_at = time.ticks_ms()
+        self.hub_at = self.state_at
+        self.state_err = ""
+        self.hub_err = ""
+        self.hub_next = time.ticks_add(self.state_at, HUB_EVERY_MS)
+        return True
+
+    def _state_path(self):
+        path = "/state"
+        sep = "?"
+        for k in STATE_KEYS:
+            rev = self.state_rev.get(k)
+            if rev is not None:
+                path += sep + "r_" + k + "=" + str(rev)
+                sep = "&"
+        return path
+
+    def _state_query(self):
+        """One-shot fallback when the long-lived stream is not connected."""
+        if not self.connected:
+            self.last_err = "NO WIFI"
+            return False
+        now = time.ticks_ms()
+        d = self.hub_get(self._state_path(), timeout=HUB_TIMEOUT_S,
+                         max_size=12288, limit=1)
+        if not d:
+            self.state_err = self.last_err or "HUB OFFLINE"
+            # Do not let every page redraw try the same dead address again.
+            self.state_next = time.ticks_add(now, HUB_RETRY_MS)
+            return False
+        return self._apply_state(d)
+
+    def _stream_close(self):
+        s = self.stream
+        self.stream = None
+        self.stream_buf = b""
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+        self.stream_next = time.ticks_add(time.ticks_ms(), self.stream_retry)
+
+    def _stream_connect(self, now):
+        self.stream_next = time.ticks_add(now, self.stream_retry)
+        cand = self._hub_candidates(now)
+        for host, port, _ in cand:
+            s = None
+            last = None
+            try:
+                infos = resolve(host, port)
+                for fam, typ, _proto, _canon, addr in infos:
+                    try:
+                        s = socket.socket(fam, typ)
+                        s.settimeout(HUB_TIMEOUT_S)
+                        s.connect(addr)
+                        break
+                    except Exception as e:
+                        last = e
+                        if s is not None:
+                            try:
+                                s.close()
+                            except Exception:
+                                pass
+                            s = None
+                if s is None:
+                    if last is not None:
+                        raise last
+                    continue
+                path = "/stream"
+                sep = "?"
+                if self.hub_token:
+                    path += sep + "k=" + self.hub_token
+                    sep = "&"
+                for k in STATE_KEYS:
+                    rev = self.state_rev.get(k)
+                    if rev is not None:
+                        path += sep + "r_" + k + "=" + str(rev)
+                        sep = "&"
+                req = ("GET " + path + " HTTP/1.0\r\nHost: " + host +
+                       "\r\nConnection: keep-alive"
+                       "\r\nUser-Agent: AtomS3-Desk\r\n\r\n")
+                s.send(req.encode())
+                s.settimeout(0)
+                self.stream = s
+                self.stream_buf = b""
+                self.stream_last = now
+                self.stream_host = host
+                self.stream_port = int(port)
+                self.hub_host, self.hub_port = host, int(port)
+                self.hub_bad.pop((host, port), None)
+                self.stream_retry = STREAM_RETRY_MS
+                self.stream_err = ""
+                return True
+            except Exception as e:
+                self.stream_err = "stream " + str(e)[:20]
+                if s is not None:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                self.hub_bad[(host, port)] = time.ticks_add(now, HUB_BAD_MS)
+        if self.stream_retry < STREAM_RETRY_MAX_MS:
+            self.stream_retry *= 2
+            if self.stream_retry > STREAM_RETRY_MAX_MS:
+                self.stream_retry = STREAM_RETRY_MAX_MS
+        return False
+
+    def stream_poll(self, now):
+        """Read pushed state without ever blocking the UI loop."""
+        if not self.connected:
+            if self.stream is not None:
+                self._stream_close()
+            return
+        if self.stream is None:
+            if time.ticks_diff(now, self.stream_next) >= 0:
+                self._stream_connect(now)
+            return
+        for _ in range(4):
+            try:
+                data = self.stream.recv(1024)
+            except OSError as e:
+                code = e.args[0] if e.args else 0
+                if code in (11, 110, 10035):
+                    break              # EAGAIN: no more bytes right now
+                self._stream_close()
+                return
+            except Exception:
+                self._stream_close()
+                return
+            if data is None:
+                break              # some ports report would-block as None
+            if not data:
+                self._stream_close()
+                return
+            self.stream_last = now
+            self.stream_buf += data
+            if len(self.stream_buf) > 12288:
+                self._stream_close()
+                return
+            while True:
+                i = self.stream_buf.find(b"\n")
+                if i < 0:
+                    break
+                line = self.stream_buf[:i].strip()
+                self.stream_buf = self.stream_buf[i + 1:]
+                if not line:
+                    continue
+                try:
+                    self._apply_state(json.loads(line))
+                except Exception as e:
+                    self.stream_err = "state " + str(e)[:16]
+        if time.ticks_diff(now, self.stream_last) > STREAM_STALE_MS:
+            self._stream_close()
+
+    def hub_get(self, path, timeout=HUB_TIMEOUT_S, max_size=4096, limit=0):
         """One short GET to the hub, skipping dead addresses.
 
         Used by the action pages (Spotify, restart) so a failed hub cannot
@@ -448,7 +738,10 @@ class Net:
             return None
         self.last_err = ""
         now = time.ticks_ms()
-        for host, port, _ in self._hub_candidates(now):
+        cands = self._hub_candidates(now)
+        if limit:
+            cands = cands[:limit]
+        for host, port, _ in cands:
             try:
                 raw = http_get(host, with_token(path, self.hub_token),
                                port=port, timeout=timeout, max_size=max_size)
@@ -478,66 +771,27 @@ class Net:
         return None
 
     def maybe_hub(self, force=False, live=False):
+        """Refresh the authoritative snapshot (stream first, /state fallback)."""
         if not self.connected:
             return False
+        if self.state_fresh():
+            return True
         now = time.ticks_ms()
         if not self.hub_targets:
             if time.ticks_diff(now, self.disc_at) > 15000:
                 self.discover(now)
             if not self.hub_targets:
+                self.state_err = "HUB NOT SET"
                 return False
         if not force and not live and time.ticks_diff(now, self.hub_next) < 0:
             return False
-        cand = self._hub_candidates(now)
-        if not cand:
-            # Every address is on another subnet or backed off.  Do not touch
-            # the network now: that would freeze the screen for nothing.
-            if not self.hub_err:
-                self.hub_err = "HUB OFFLINE"
-            self.hub_next = time.ticks_add(now, HUB_RETRY_MS)
-            return False
-        host, port, path = cand[self.hub_idx % len(cand)]
-        try:
-            raw = http_get(host, with_token(path, self.hub_token), port=port,
-                           timeout=HUB_TIMEOUT_S, max_size=8192)
-            if http_status(raw) == 401:
-                raise ValueError("bad token")
-            hub = json.loads(http_body(raw))
-            self.hub = hub
-            self.hub_host, self.hub_port, self.hub_path = host, port, path
-            self.hub_at = time.ticks_ms()
-            self.hub_err = ""
-            self.hub_bad.pop((host, port), None)
-            self.hub_next = time.ticks_add(now, HUB_EVERY_MS)
-            # The hub clock is NTP-synced by the PC. If the board RTC could not
-            # be set (NTP blocked on this Wi-Fi), follow the hub instead.
-            ts = int(hub.get("ts") or 0)
-            if ts:
-                diff = ts - int(time.time())
-                if abs(diff) > 1:
-                    self.clock_diff = diff
-                    print("clock: hub offset %+ds" % diff)
-            svcs = hub.get("services")
-            if svcs is None:
-                svcs = self._legacy_services(hub)
-            self.services = svcs or []
-            self.alert = bool(hub.get("alert"))
-            self.alert_ids = hub.get("alert_ids") or []
-            self.players = hub.get("players") or []
-            self.uptime = hub.get("svc_uptime") or {}
-            return True
-        except Exception as e:
-            self.hub_err = "hub " + str(e)
-            self.hub_bad[(host, port)] = time.ticks_add(now, HUB_BAD_MS)
-            self.hub_idx = (self.hub_idx + 1) % len(cand)
-            if time.ticks_diff(now, self.disc_at) > 60000:
-                self.discover(now)
-            self.hub_next = time.ticks_add(now, HUB_RETRY_MS)
-            return False
+        return self._state_query()
 
     def maybe_hub_live(self, now):
-        """Fresh status while a live page (PC/SERVERS/STATUS) is visible."""
-        if self.hub_err and time.ticks_diff(now, self.hub_next) < 0:
+        """Called by live pages; the stream usually keeps this a no-op."""
+        if self.state_fresh():
+            return True
+        if self.state_err and time.ticks_diff(now, self.state_next) < 0:
             return False
         if time.ticks_diff(now, self.live_at) < LIVE_EVERY_MS:
             return False
@@ -545,51 +799,12 @@ class Net:
         return self.maybe_hub(live=True)
 
     def maybe_events(self, force=False):
-        """Fetch notifications posted since the last id we saw."""
-        if not self.connected or not self.hub_host:
-            return False
-        now = time.ticks_ms()
-        if not force and time.ticks_diff(now, self.events_at) < 15000:
-            return False
-        self.events_at = now
-        path = "/events?since=%d" % self.event_last
-        d = self.hub_get(path, timeout=1.5, max_size=6144)
-        if not d:
-            self.events_err = self.last_err or "NO HUB"
-            return False
-        try:
-            last = int(d.get("last") or 0)
-            if last < self.event_last:
-                # hub restarted and its ids restarted: replay from zero
-                self.event_last = 0
-            for ev in d.get("events") or []:
-                eid = int(ev.get("id") or 0)
-                if eid > self.event_last:
-                    self.event_last = eid
-                    self.events.append(ev)
-            if len(self.events) > 10:
-                del self.events[:-10]
-            self.events_err = ""
-            return True
-        except Exception as e:
-            self.events_err = "ev " + str(e)[:16]
-            return False
+        """Notifications now arrive inside the hub state snapshot."""
+        return bool(self.events)
 
     def maybe_calendar(self, force=False):
-        """Next calendar event from the hub's ICS feed, every 5 minutes."""
-        if not self.connected or not self.hub_host:
-            return False
-        now = time.ticks_ms()
-        if not force and time.ticks_diff(now, self.calendar_at) < 300000:
-            return False
-        self.calendar_at = now
-        d = self.hub_get("/calendar", timeout=1.5, max_size=2048)
-        if not d:
-            self.calendar_err = self.last_err or "NO HUB"
-            return False
-        self.calendar = d
-        self.calendar_err = ""
-        return True
+        """The calendar is part of the hub state; no separate fetch any more."""
+        return self.calendar is not None
 
     def _legacy_services(self, hub):
         out = []

@@ -165,7 +165,17 @@ def main():
     try:
         import serial
 
-        s = serial.Serial(PORT, 115200, timeout=0.2)
+        s = None
+        # The native USB port disappears while the board reboots; wait for
+        # it to come back instead of failing the whole flash.
+        for _ in range(30):
+            try:
+                s = serial.Serial(PORT, 115200, timeout=0.2)
+                break
+            except Exception:
+                time.sleep(0.5)
+        if s is None:
+            raise IOError("serial port did not come back")
         s.dtr = False
         s.rts = False
         end = time.time() + 8
@@ -174,13 +184,26 @@ def main():
             c = s.read(s.in_waiting or 1)
             if c:
                 buf += c
-        s.write(b"\x03")
-        time.sleep(0.3)
-        end = time.time() + 2
-        while time.time() < end:
-            c = s.read(s.in_waiting or 1)
-            if c:
-                buf += c
+        if os.environ.get("PUSH_REPL") == "1":
+            # Debugging: stop the app and leave the board at the REPL.
+            s.write(b"\x03")
+            time.sleep(0.3)
+            end = time.time() + 2
+            while time.time() < end:
+                c = s.read(s.in_waiting or 1)
+                if c:
+                    buf += c
+        else:
+            # Leave the firmware running.  Interrupting here used to leave the
+            # gadget dead at the REPL, so the first frame after a flash showed
+            # an old screen and the hub looked unreachable.
+            s.write(b"\x04")
+            time.sleep(1.0)
+            end = time.time() + 1.0
+            while time.time() < end:
+                c = s.read(s.in_waiting or 1)
+                if c:
+                    buf += c
         s.close()
         text = buf.decode("utf-8", "replace")
         print("--- boot log ---")

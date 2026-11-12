@@ -6,6 +6,9 @@ small Python hub that runs on a PC in the same LAN.
 ## Features
 
 - **Clock & weather** on the 128x128 screen, plus a cute idle mascot.
+- **Hub-authoritative display**: the hub pushes one revisioned state object
+  over a long-lived `/stream` connection; the gadget only renders it. Pages,
+  Spotify state and alerts never advance or change on their own.
 - **Next calendar event**: the clock page shows a countdown to the next event
   from any iCalendar (ICS) feed. No Google/Microsoft OAuth is needed; the hub
   parses the feed including the common `RRULE` cases.
@@ -68,7 +71,8 @@ firmware/            MicroPython code for the AtomS3
   config.json        Wi-Fi, location, hub URLs, pins (copy from .example)
   libs/desk/         app, pages, ui, net, led, light
 hub/                 PC-side hub
-  hub.py             HTTP server: /stats, /events, /notify, /calendar, /spotify_*, /lyrics
+  hub.py             HTTP server: /state, /stream, /stats, /events, /notify,
+                     /calendar, /spotify_*, /lyrics
   spotify_bridge.py  Spotify backend (SMTC by default)
   hub_config.json    services + keys (copy from .example)
   start_hub.bat      silent launcher (hands off to the VBS)
@@ -192,9 +196,11 @@ The hub keeps a small in-memory event log:
   `GET /notify?title=...&body=...&kind=...` also works.
 - `GET /events?since=<last id>` returns `{"now", "last", "events": [...]}`.
   Event ids restart at 1 when the hub restarts; the device notices a smaller
-  `last` and replays from zero.
+  `last` and replays from zero. The state stream already carries the latest
+  events, so this endpoint is kept for scripts and older devices.
 - `GET /calendar` returns the next event parsed from the ICS feed, or
-  `{"status": "disabled"}` until `calendar.ics_url` is set.
+  `{"status": "disabled"}` until `calendar.ics_url` is set. The same object is
+  published in the `cal` section of the state stream.
 
 ```bash
 curl -X POST http://192.168.1.10:8765/notify?k=TOKEN \
@@ -202,9 +208,9 @@ curl -X POST http://192.168.1.10:8765/notify?k=TOKEN \
      -d '{"title":"Build done","body":"CI finished in 2m","kind":"manual"}'
 ```
 
-The device polls `/events` about every 15 seconds, shows an LED-flashing banner
-for ~9 seconds (a click dismisses it), and keeps the latest 20 events on the
-NOTICES page. Double click on that page clears the local list. `events.keep`
+The gadget receives new events inside the state stream, shows an LED-flashing
+banner for ~9 seconds (a click dismisses it), and keeps the latest 20 events on
+the NOTICES page. Double click on that page clears the local list. `events.keep`
 in `hub_config.json` controls how many events the hub retains.
 
 Minecraft joins, leaves and server moves become `mc_join`, `mc_leave` and
@@ -223,8 +229,8 @@ For the calendar countdown, set the feed and the fixed UTC offset:
 ```
 
 Most calendar services offer a secret/public ICS address (Google Calendar:
-"Secret address in iCal format"; Outlook: publish calendar). The feed is fetched
-at most once a minute, and the device asks for the next event every 5 minutes.
+"Secret address in iCal format"; Outlook: publish calendar). The hub refreshes
+the feed at most once a minute and publishes the next event in the state stream.
 The common `RRULE` cases (daily, weekly with `BYDAY`, monthly, yearly,
 `INTERVAL`, `COUNT`, `UNTIL`) are expanded locally. No OAuth token is stored.
 
@@ -243,8 +249,35 @@ Two backends are supported, chosen automatically:
 If the SpotAPI call fails, the hub falls back to SMTC and retries SpotAPI a few
 minutes later. Lyrics come from the free [LRCLIB](https://lrclib.net/) API,
 cached per track, with a duration-matched search fallback for localized names.
-`/lyrics?pos=<ms>` returns the current and next line for the device's own
-playback position.
+The hub owns the authoritative playback position and publishes the current and
+next line in the `ly` section. `/lyrics?pos=<ms>` remains for compatibility.
+
+## Device state stream
+
+The gadget is a pure display: every page reads one snapshot and never combines
+endpoints or changes mode/page on its own. The hub splits that snapshot into
+six sections, each with its own revision:
+
+| Section | Contents |
+| --- | --- |
+| `pc` | CPU, memory, GPU, uptime, host |
+| `svc` | service checks, alert ids, player list, per-service uptime |
+| `sp` | Spotify status, track, device and progress anchor |
+| `ly` | current and next lyric line |
+| `cal` | next calendar event |
+| `ev` | last event id and the latest 10 events |
+
+- `GET /state` returns the full snapshot, or only the sections whose revision
+  is newer than the caller's `r_<section>` query values.
+- `GET /stream` keeps the connection open and writes one JSON delta per line
+  (NDJSON) whenever a section changes, plus a one-second heartbeat. The hub
+  closes the connection after a write timeout; the device reconnects with
+  backoff and falls back to `/state` if the stream cannot be established.
+- The progress position is anchored by the hub and interpolated locally by the
+  device between anchors. The device never decides which lyric line is current.
+- `sp` and `svc` revisions use a ten-second bucket so small progress/uptime
+  changes do not flood the stream. `cal` omits the countdown and `ly` omits the
+  anchor time; the device derives both from the included timestamp.
 
 ## Security
 

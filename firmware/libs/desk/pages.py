@@ -249,14 +249,15 @@ class PcPage(BasePage):
     def draw(self, app):
         u.clear()
         u.header(self.title, app.idx, len(app.pages))
-        h = app.net.hub
+        h = app.net.state.get("pc") or app.net.hub
         if not h:
             if not app.net.connected:
                 msg = "NO WIFI"
             elif not app.net.hub_host:
                 msg = "HUB NOT SET"
             else:
-                msg = app.net.hub_err or "HUB OFFLINE"
+                msg = (app.net.state_err or app.net.hub_err
+                       or "HUB OFFLINE")
             u.ctext(msg[:20], u.F_SM, 58, u.MUTED)
             u.dots(len(app.pages), app.idx)
             return
@@ -288,7 +289,7 @@ class PcPage(BasePage):
         d = up // 86400
         hh = (up % 86400) // 3600
         mm = (up % 3600) // 60
-        if app.net.hub_err:
+        if app.net.state_err or app.net.hub_err:
             # Keep the last values on screen but make it obvious they are old.
             age = app.net.hub_age()
             u.ctext(("OFFLINE %s" % age_text(age))[:21], u.F_TINY, 104, u.RED)
@@ -300,36 +301,27 @@ class PcPage(BasePage):
 class ServersPage(BasePage):
     title = "SERVERS"
     PER = 4
-    CYCLE_MS = 5000
 
     def __init__(self):
         self.at = 0
-        self.cyc = 0
         self.slot = 0
 
     def enter(self, app):
         self.slot = 0
         self.at = 0
-        self.cyc = time.ticks_ms()
         app.net.maybe_hub(force=True)
 
     def action(self, app):
         # double click: jump to the next services page
         self._next(app)
-        self.cyc = time.ticks_ms()
         app.net.maybe_hub(force=True)
 
     def tick(self, app, now):
-        redraw = False
         if time.ticks_diff(now, self.at) > 1000:
             self.at = now
             app.net.maybe_hub_live(now)
-            redraw = True
-        if time.ticks_diff(now, self.cyc) >= self.CYCLE_MS:
-            self.cyc = now
-            self._next(app)
-            redraw = True
-        return redraw
+            return True
+        return False
 
     def _npages(self, app):
         n = len(app.net.services or [])
@@ -347,7 +339,8 @@ class ServersPage(BasePage):
         npages = self._npages(app)
         self.slot %= npages
         head = "%s %d/%d" % (self.title, self.slot + 1, npages)
-        hc = u.RED if net.alert else (u.AMBER if net.hub_err else u.ACCENT)
+        stale = bool(net.state_err or net.hub_err)
+        hc = u.RED if net.alert else (u.AMBER if stale else u.ACCENT)
         u.header(head, app.idx, len(app.pages), hc)
 
         if not svcs:
@@ -355,8 +348,8 @@ class ServersPage(BasePage):
                 msg = "NO WIFI"
             elif not net.hub_host:
                 msg = "HUB NOT SET"
-            elif not net.hub:
-                msg = (net.hub_err or "HUB OFFLINE")[:20]
+            elif not net.state.get("svc"):
+                msg = (net.state_err or net.hub_err or "HUB OFFLINE")[:20]
             else:
                 msg = "NO SERVICES"
             u.ctext(msg, u.F_SM, 58, u.MUTED)
@@ -409,7 +402,7 @@ class ServersPage(BasePage):
             if net.alert:
                 ids = ",".join((net.alert_ids or [])[:3])
                 u.ctext(("ALERT " + ids)[:22], u.F_TINY, 92, u.RED)
-        if net.hub_err:
+        if stale:
             u.ctext(("STALE %s" % age_text(net.hub_age()))[:20],
                     u.F_TINY, 108, u.AMBER)
         u.dots(len(app.pages), app.idx)
@@ -671,10 +664,11 @@ class StatusPage(BasePage):
         else:
             u.text("NO DOWNTIME", u.F_TINY, 6, 100, u.GREEN)
 
-        if net.hub and not net.hub_err:
-            hub, hc = "OK", u.GREEN
-        elif net.hub:
+        stale = bool(net.state_err or net.hub_err)
+        if net.state and (stale or not net.state_fresh(10000)):
             hub, hc = "STALE", u.AMBER
+        elif net.state:
+            hub, hc = "OK", u.GREEN
         elif net.hub_host:
             hub, hc = "OFFLINE", u.RED
         else:
@@ -732,12 +726,11 @@ class SpotifyPage(BasePage):
         self.next_y = 73
         self.lyr_font = u.F_JA
         self.lyr_scroll = False
-        # local progress interpolation between hub polls
-        self.prog_base = 0
-        self.prog_at = 0
+        self.net = None
 
     def enter(self, app):
         now = time.ticks_ms()
+        self.net = app.net
         self.at = now - self.REFRESH_MS
         self.frame_at = now
         self.pos = 0
@@ -745,6 +738,7 @@ class SpotifyPage(BasePage):
         self.hold_until = time.ticks_add(now, self.HOLD_MS)
         self.sig = None
         self.dirty_full = True
+        app.net.maybe_hub(force=True)
         self.refresh(app)
 
     def soft_hold(self, app):
@@ -762,6 +756,7 @@ class SpotifyPage(BasePage):
         return True
 
     def action(self, app):
+        app.net.maybe_hub(force=True)
         self.refresh(app, force=True)
 
     def _fail(self, msg):
@@ -779,36 +774,38 @@ class SpotifyPage(BasePage):
         return self.dirty_full or self.dirty_lines or self.dirty_prog
 
     def refresh(self, app, force=False):
+        """Read the hub-pushed snapshot.  No per-page HTTP requests."""
         now = time.ticks_ms()
         if not force and time.ticks_diff(now, self.at) < self.gap:
             return self._dirty()
         self.at = now
-        t0 = now
-        d = app._http_get("/spotify_status")
-        # A hub on the internet answers in tens of milliseconds; poll less
-        # often then so the marquee keeps its frame rate.
-        took = time.ticks_diff(time.ticks_ms(), t0)
-        self.gap = self.REFRESH_MS if took < 60 else 500
-        if not d:
-            # Do not retry in a tight loop while the hub is unreachable: the
-            # error screen is enough and the marquee must keep moving.
-            self.gap = 3000
-            self._fail(app.http_err or "HUB OFFLINE")
+        net = app.net
+        fresh = net.state_fresh(8000)
+        self.gap = self.REFRESH_MS if fresh else 3000
+        sp = net.state.get("sp")
+        if not sp or not fresh:
+            # The push stream may still be connecting; ask for one snapshot.
+            net.maybe_hub(force=True)
+            sp = net.state.get("sp")
+            if not net.state_fresh(10000):
+                self._fail(net.state_err or net.hub_err or "HUB OFFLINE")
+                return self._dirty()
+            self.gap = self.REFRESH_MS
+        if not sp:
+            self._fail(net.state_err or net.hub_err or "HUB OFFLINE")
             return self._dirty()
-        st = d.get("status")
+        st = sp.get("status")
         if st not in ("success", "not_playing", "paused"):
-            self._fail(d.get("message") or st or "ERROR")
+            self._fail(sp.get("message") or st or "ERROR")
             return self._dirty()
-        sig = (d.get("song"), d.get("artist"), d.get("device"),
-               bool(d.get("is_playing")))
+        sig = (sp.get("song"), sp.get("artist"), sp.get("device"),
+               bool(sp.get("is_playing")))
         prev = self.sig
-        self.data = d
+        self.data = sp
         self.err = ""
         self.sig = sig
-        self.prog_base = int(d.get("progress_ms") or 0)
-        self.prog_at = time.ticks_ms()
         if not self.lyrics:
-            self._plan(d)
+            self._plan(sp)
         if sig != prev:
             # new track / device / play state -> one clean full repaint
             self.pos = 0
@@ -819,40 +816,30 @@ class SpotifyPage(BasePage):
         else:
             # same track: only the small progress region changes
             self.dirty_prog = True
-        if (self.lyrics
-                and time.ticks_diff(now, self.lyr_at) >= self.LYRICS_MS):
-            self._fetch_lyrics(app, now)
+        if self.lyrics:
+            self._sync_lyrics(net, now)
         return self._dirty()
 
     def _pos(self):
-        """Progress for display, interpolated between hub polls."""
-        d = self.data or {}
-        pos = self.prog_base
-        if d.get("is_playing"):
-            pos += time.ticks_diff(time.ticks_ms(), self.prog_at)
-        dur = int(d.get("duration_ms") or 0)
-        if pos < 0:
-            pos = 0
-        if dur and pos > dur:
-            pos = dur
-        return pos
+        """Progress owned by the hub, interpolated locally between updates."""
+        if self.net is not None:
+            return self.net.sp_progress()
+        return 0
 
-    def _fetch_lyrics(self, app, now):
-        self.lyr_at = now
-        d = app._http_get("/lyrics?pos=%d" % self._pos())
-        if d:
-            self.lyr = d
-        else:
-            self.lyr = {"status": "error",
-                        "message": app.http_err or "NO HUB"}
+    def _sync_lyrics(self, net, now):
+        """Current + next line come straight from the hub state."""
+        ly = net.state.get("ly")
+        if not ly:
+            return
+        self.lyr = ly
         line = ""
-        if self.lyr.get("status") == "success":
-            line = self.lyr.get("line") or ""
-        key = (self.lyr.get("status"), line)
+        if ly.get("status") == "success":
+            line = ly.get("line") or ""
+        key = (ly.get("status"), line)
         if key != self.lyr_key:
             self.lyr_key = key
             self.lyr_line = line
-            self._plan_lyrics(time.ticks_ms())
+            self._plan_lyrics(now)
             self.dirty_lines = True
         elif self.long:
             # scrolling keeps repainting; static text stays put (no flicker)
