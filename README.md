@@ -5,7 +5,9 @@ small Python hub that runs on a PC in the same LAN.
 
 ## Features
 
-- **Clock & weather** on the 128x128 screen, plus a cute idle mascot.
+- **Clock & weather** on the 128x128 screen, plus a cute idle mascot. The
+  forecast is fetched by the hub and published in the state stream, so the
+  gadget itself never talks to the internet.
 - **Hub-authoritative display**: the hub pushes one revisioned state object
   over a long-lived `/stream` connection; the gadget only renders it. Pages,
   Spotify state and alerts never advance or change on their own.
@@ -69,7 +71,18 @@ While a notification banner is visible, any click dismisses it. In Spotify mode:
 firmware/            MicroPython code for the AtomS3
   boot.py main.py    entry points
   config.json        Wi-Fi, location, hub URLs, pins (copy from .example)
-  libs/desk/         app, pages, ui, net, led, light
+  app.py             thin entry point; imports the desk package
+  desk/              the display client, split to fit the small heap
+    const.py         shared constants and the fallback page ring
+    ui.py            palette, fonts, drawing primitives
+    wifi.py          Wi-Fi roaming between home and travel networks
+    hub.py           HTTP polling, DNS cache, target failover
+    pom.py           pomodoro, auto-brightness, alert LED
+    spot.py          Spotify state machine (scroll + lyric sync)
+    spotdraw.py      Spotify page renderer
+    draw.py          renderers for the hub-driven pages
+    loop.py          main loop, input gestures, notifications
+    app.py           app state, wiring, run()
 hub/                 PC-side hub
   hub.py             HTTP server: /state, /stream, /stats, /events, /notify,
                      /calendar, /spotify_*, /lyrics
@@ -83,6 +96,12 @@ hub/                 PC-side hub
 tools/               flashing and network diagnostics helpers
 ```
 
+The firmware is split into small modules on purpose. MicroPython compiles a
+whole file before running it, and UIFlow2 2.3.1 only leaves about 112 KB of
+heap at boot; a single large `app.py` cannot be compiled there. Keep new
+modules under roughly 12 KB and import nothing at boot time that is not
+needed immediately.
+
 ## Setup
 
 ### 1. Device
@@ -90,7 +109,7 @@ tools/               flashing and network diagnostics helpers
 1. Install the UIFlow2 firmware on the AtomS3 (the stock environment can be
    restored at any time from UIFlow2).
 2. Copy `firmware/config.json.example` to `firmware/config.json` and fill in
-   your location, the hub URL(s) and one or more Wi-Fi networks:
+   the timezone (`location.tz`), the hub URL(s) and one or more Wi-Fi networks:
 
    ```json
    "wifi": [
@@ -134,7 +153,9 @@ tools/               flashing and network diagnostics helpers
 
 1. Install Python 3.10+ and `pip install psutil`.
 2. Copy `hub/hub_config.json.example` to `hub/hub_config.json` and replace every
-   placeholder (`YOUR_...`) with your own URLs, IPs and API key.
+   placeholder (`YOUR_...`) with your own URLs, IPs and API key. Set
+   `"location": {"lat": ..., "lon": ...}` so the hub can fetch the local
+   forecast (open-meteo, no API key) for the `wx` state section.
 3. Double-click `hub/start_hub_silent.vbs` (or run `hub/install_hub.bat` once to
    add the firewall rule, a silent autostart shortcut and a watchdog task).
 4. Open <http://localhost:8765/stats> to check it works.
@@ -256,7 +277,7 @@ next line in the `ly` section. `/lyrics?pos=<ms>` remains for compatibility.
 
 The gadget is a pure display: every page reads one snapshot and never combines
 endpoints or changes mode/page on its own. The hub splits that snapshot into
-six sections, each with its own revision:
+seven sections, each with its own revision:
 
 | Section | Contents |
 | --- | --- |
@@ -266,6 +287,13 @@ six sections, each with its own revision:
 | `ly` | current and next lyric line |
 | `cal` | next calendar event |
 | `ev` | last event id and the latest 10 events |
+| `wx` | current conditions and today's min/max from open-meteo |
+
+The device makes no outbound internet requests while it can reach the hub:
+weather, calendar, time, Spotify and notifications all arrive inside the
+snapshot. NTP is only used as a first-boot fallback before the hub has ever
+answered. This keeps a weak or filtered Wi-Fi link from turning a DNS lookup or
+a failed TLS handshake into a stall on the display.
 
 - `GET /state` returns the full snapshot, or only the sections whose revision
   is newer than the caller's `r_<section>` query values.
@@ -277,7 +305,8 @@ six sections, each with its own revision:
   device between anchors. The device never decides which lyric line is current.
 - `sp` and `svc` revisions use a ten-second bucket so small progress/uptime
   changes do not flood the stream. `cal` omits the countdown and `ly` omits the
-  anchor time; the device derives both from the included timestamp.
+  anchor time; the device derives both from the included timestamp. `wx` omits
+  the fetch time, so the revision changes only when the forecast does.
 
 ## Security
 

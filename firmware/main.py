@@ -1,35 +1,45 @@
-import M5
-from M5 import *
-import time, gc
+# Thin display boot: WiFi first, then the app.
+#
+# The ESP32-S3 has only a small IDF heap free at boot.  MicroPython compiles a
+# whole file before running it, so this file stays tiny and grabs the radio
+# before anything else is imported.  The app itself lives in /flash/desk/*,
+# split into small modules so each one fits the heap.
+import gc
+import sys
+import time
 
-from desk.config import load
-from desk.net import Net
-from desk.app import App
+import network
 
-
-def main():
-    M5.begin()
-    gc.collect()
-    cfg = load()
-    net = Net(cfg)
-    app = App(cfg, net)
-    app.run()
-
+gc.collect()
+print("boot free", gc.mem_free())
+wlan = network.WLAN(network.STA_IF)
+gc.collect()
+print("boot wlan", gc.mem_free())
 
 try:
-    main()
+    import app
+
+    print("boot app", gc.mem_free())
+    app.run(wlan)
 except Exception as e:
-    # Show the problem on screen, keep the REPL usable for debugging
+    print("boot fail", repr(e))
+    sys.print_exception(e)
+    # The screen is the only console we have.  Print the error and stay put
+    # instead of vanishing into a reset loop.
     try:
-        from desk import ui as u
-        u.clear()
-        u.ctext("ERROR", u.F_MED, 6, u.RED)
+        import M5
+
+        M5.Display.fillScreen(0x000000)
+        M5.Display.setTextColor(0xF85149, 0x000000)
+        M5.Display.setCursor(4, 4)
+        M5.Display.print("BOOT ERROR")
         msg = repr(e)
-        y = 34
-        while msg and y < 110:
-            u.text(msg[:16], u.F_SM, 4, y, u.WHITE)
-            msg = msg[16:]
-            y += 13
+        y = 20
+        while msg and y < 120:
+            M5.Display.setCursor(4, y)
+            M5.Display.print(msg[:21])
+            msg = msg[21:]
+            y += 12
     except Exception:
         pass
-    raise
+    time.sleep(10)

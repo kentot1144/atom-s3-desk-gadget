@@ -131,10 +131,26 @@ def main():
             print("could not enter the raw REPL (is the board on %s?)" % PORT)
             return 1
         d.cmd("import os\n"
-              "for p in ('/flash/libs', '/flash/libs/desk'):\n"
-              "    try: os.mkdir(p)\n"
-              "    except Exception: pass\n"
-              "print('dirs ok')")
+              "def rm(p):\n"
+              "    try:\n"
+              "        for e in os.ilistdir(p):\n"
+              "            q = p + '/' + e[0]\n"
+              "            if e[1] & 0x4000:\n"
+              "                rm(q)\n"
+              "            else:\n"
+              "                os.remove(q)\n"
+              "        os.rmdir(p)\n"
+              "    except Exception:\n"
+              "        pass\n"
+              "rm('/flash/libs')\n"
+              "print('clean ok')")
+
+        dirs = sorted({os.path.dirname(rel).replace(os.sep, "/")
+                       for rel in files if "/" in rel},
+                      key=lambda p: p.count("/"))
+        for dpath in dirs:
+            d.cmd("import os\ntry:\n    os.mkdir('/flash/%s')\n"
+                  "except Exception:\n    pass" % dpath)
 
         for rel in files:
             local = os.path.join(ROOT, rel.replace("/", os.sep))
@@ -157,28 +173,36 @@ def main():
                 print("   err:", err.strip()[:200])
 
         print("resetting board...")
-        d.cmd("import machine, time\ntime.sleep_ms(100)\nmachine.reset()", timeout=3)
+        # soft_reset() restarts the VM without re-initialising the USB
+        # Serial/JTAG peripheral.  machine.reset() on this board drops the CDC
+        # port and it only comes back after a physical replug.
+        d.cmd("import machine, time\ntime.sleep_ms(100)\n"
+              "machine.soft_reset()", timeout=3)
     finally:
         d.close()
 
-    time.sleep(5)
+    time.sleep(1.5)
     try:
         import serial
 
-        s = None
-        # The native USB port disappears while the board reboots; wait for
-        # it to come back instead of failing the whole flash.
-        for _ in range(30):
+        s = serial.Serial()
+        s.port = PORT
+        s.baudrate = 115200
+        s.timeout = 0.2
+        # Set DTR/RTS before open: toggling them after open drops the native
+        # USB CDC and the port never re-enumerates without a replug.
+        s.dtr = False
+        s.rts = False
+        for _ in range(20):
             try:
-                s = serial.Serial(PORT, 115200, timeout=0.2)
+                s.open()
                 break
             except Exception:
                 time.sleep(0.5)
-        if s is None:
-            raise IOError("serial port did not come back")
-        s.dtr = False
-        s.rts = False
-        end = time.time() + 8
+        else:
+            print("serial port did not come back - replug the board")
+            return 1
+        end = time.time() + 12
         buf = b""
         while time.time() < end:
             c = s.read(s.in_waiting or 1)
