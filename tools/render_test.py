@@ -280,6 +280,32 @@ def main():
             print("FAIL spotify   slide px=%d %r" % (off, e))
     app.spot.slide = 0
 
+    # slide timeline: the block must shift exactly one line and land at 0 px
+    app.hub.ly = {"status": "success", "synced": True, "line": "A",
+                  "next": "B", "next2": "C", "line_at": 0,
+                  "next_at": 60000}
+    app.spot.lyrics = True
+    app.spot.buf = ("A", "B", "C")
+    app.spot.lyr_key = ("success", "A")
+    app.spot.slide = 0
+    now = time.ticks_ms()
+    if not app.spot._start_slide(now):
+        failures += 1
+        print("FAIL spotify   slide did not start")
+    else:
+        app.spot.tick(now + 120)
+        mid = app.spot.slide
+        app.spot.tick(now + app.spot.SLIDE_MS + 10)
+        print("ok   spotify   slide mid=%-2d land buf=%r slide=%d"
+              % (mid, app.spot.buf, app.spot.slide))
+        if not (0 < mid < app.spot.SLOT_H):
+            failures += 1
+            print("FAIL spotify   slide mid=%d not between 0 and %d"
+                  % (mid, app.spot.SLOT_H))
+        if app.spot.buf[:2] != ("B", "C") or app.spot.slide:
+            failures += 1
+            print("FAIL spotify   slide did not land on the next line")
+
     # rows sub-pages: each page draws, and the timer advances then wraps
     auto = None
     for page in pages:
