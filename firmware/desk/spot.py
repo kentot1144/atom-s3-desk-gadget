@@ -62,6 +62,8 @@ class Spot(SpotDraw):
         self.w_n2 = ()
         self.disp = ()              # the rows on screen, top to bottom
         self.cur_rows = 1           # rows the line being sung occupies
+        self.txt = self.TXT         # chosen lyric scale for the current line
+        self.slot_h = self.SLOT_H   # matching row pitch
         self.slide = 0              # px the lyric block has slid up
         self.slide_px = self.SLOT_H
         self.slide_at = 0
@@ -214,9 +216,9 @@ class Spot(SpotDraw):
         if not self.buf[1]:
             return False
         self._build_disp()
-        # A long line can use two or three rows; the block moves by all of
-        # them so the next line lands at the top.
-        self.slide_px = min(3, self.cur_rows) * self.SLOT_H
+        # A long line can use two to four rows; the block moves by all of them
+        # so the next line lands at the top.
+        self.slide_px = min(self.MAX_ROWS, self.cur_rows) * self.slot_h
         self.slide = 1
         self.slide_at = now
         self.pos = 0
@@ -242,13 +244,17 @@ class Spot(SpotDraw):
         self.step = 1
 
     # -- lyric wrapping ----------------------------------------------
-    def _wrap(self, s, limit=3):
-        """Rows for one lyric line, at most three, measured at the draw size."""
+    def _wrap(self, s, limit=None, size=None):
+        """Rows for one lyric line, measured at the scale that will draw it."""
+        if limit is None:
+            limit = self.MAX_ROWS
+        if size is None:
+            size = getattr(self, "txt", self.TXT)
         s = (s or "").strip()
         if not s:
             return ()
         try:
-            LCD.setTextSize(self.TXT)
+            LCD.setTextSize(size)
         except Exception:
             pass
         maxw = W - 12
@@ -286,9 +292,17 @@ class Spot(SpotDraw):
         return tuple(rows[:limit])
 
     def _build_disp(self):
-        self.w_cur = self._wrap(self.buf[0])
-        self.w_next = self._wrap(self.buf[1])
-        self.w_n2 = self._wrap(self.buf[2])
+        # Wrap at the normal scale first.  If that line plus one preview row
+        # would need a fourth row, shrink the whole block so four rows fit.
+        base = self._wrap(self.buf[0], self.MAX_ROWS, self.TXT)
+        need = len(base) + (1 if (self.buf[1] or "").strip() else 0)
+        if need > 3:
+            self.txt, self.slot_h = self.TXT_SM, self.SLOT_H_SM
+        else:
+            self.txt, self.slot_h = self.TXT, self.SLOT_H
+        self.w_cur = self._wrap(self.buf[0], self.MAX_ROWS, self.txt)
+        self.w_next = self._wrap(self.buf[1], self.MAX_ROWS, self.txt)
+        self.w_n2 = self._wrap(self.buf[2], self.MAX_ROWS, self.txt)
         self.disp = self.w_cur + self.w_next + self.w_n2
         self.cur_rows = len(self.w_cur) or 1
 

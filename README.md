@@ -34,9 +34,11 @@ small Python hub that runs on a PC in the same LAN.
 - **Synced lyrics**: hold the button for ~1 s on the Spotify screen to overlay
   a teleprompter of the current line plus the two coming lines, fetched from
   [LRCLIB](https://lrclib.net/) through the hub. Lyrics use a smaller CJK font
-  so the whole band is visible; a line wider than the panel wraps into up to
-  three rows (Latin words kept whole, CJK split per character), and the block
-  slides up by the rows the finished line used.
+  so the whole band is visible. A line wider than the panel wraps into rows
+  (Latin words kept whole, CJK split per character); three rows are drawn at
+  0.8 scale, and when a line plus its preview needs a fourth row the block
+  drops to 0.6 scale so all four fit. The block slides up by the rows the
+  finished line used.
 - **Remote Spotify restart**: a Normal-mode page that kills and relaunches the
   Spotify desktop app on the hub PC, for when it hangs and needs an Alt+F4.
   Ten seconds after the request the device polls playback for six seconds and

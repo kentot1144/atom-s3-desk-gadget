@@ -274,7 +274,9 @@ def main():
         "これは日本語のとても長い歌詞の行で、128ピクセルの画面には収まりません",
     )
     for line in long_lines:
-        rows = app.spot._wrap(line)
+        rows = app.spot._wrap(line, app.spot.MAX_ROWS, app.spot.TXT)
+        app.spot.txt = app.spot.TXT
+        app.spot.slot_h = app.spot.SLOT_H
         app.spot.buf = (line, "the line after it", "and one more after that")
         app.spot.line = line
         app.spot._plan_lyrics(time.ticks_ms())
@@ -282,15 +284,15 @@ def main():
         del DRAWS[:]
         try:
             app.spot.draw()
-            print("ok   spotify   long lyric rows=%d %3d draws"
-                  % (len(rows), len(DRAWS)))
+            print("ok   spotify   long lyric rows=%d scale=%s %3d draws"
+                  % (len(rows), app.spot.txt, len(DRAWS)))
             if LCD.size != 1.0:
                 failures += 1
                 print("FAIL spotify   lyric size leaked: %s" % LCD.size)
         except Exception as e:
             failures += 1
             print("FAIL spotify   long lyric %r" % e)
-        if not rows or len(rows) > 3:
+        if not rows or len(rows) > app.spot.MAX_ROWS:
             failures += 1
             print("FAIL wrap      rows=%r" % (rows,))
             continue
@@ -314,6 +316,42 @@ def main():
         elif len(rows) < 2:
             failures += 1
             print("FAIL wrap      japanese line was not split: %r" % (rows,))
+
+    # a line that needs a fourth row shrinks the block instead of clipping it
+    four = "one two three four five six seven"
+    base_rows = app.spot._wrap(four, app.spot.MAX_ROWS, app.spot.TXT)
+    app.spot.buf = (four, "next line", "")
+    app.spot._build_disp()
+    print("ok   spotify   four-row base=%d scale=%s rows=%d pitch=%d"
+          % (len(base_rows), app.spot.txt, app.spot.cur_rows,
+             app.spot.slot_h))
+    if len(base_rows) < 3:
+        failures += 1
+        print("FAIL wrap      four-row fixture only wrapped to %d"
+              % len(base_rows))
+    if app.spot.txt != app.spot.TXT_SM:
+        failures += 1
+        print("FAIL scale     four rows did not shrink text (scale %s)"
+              % app.spot.txt)
+    if app.spot.cur_rows > app.spot.MAX_ROWS:
+        failures += 1
+        print("FAIL scale     %d rows still exceed the band" % app.spot.cur_rows)
+    if app.spot.cur_rows * app.spot.slot_h > app.spot.BAND_H:
+        failures += 1
+        print("FAIL scale     %d rows at %d px do not fit %d px"
+              % (app.spot.cur_rows, app.spot.slot_h, app.spot.BAND_H))
+    del DRAWS[:]
+    try:
+        app.spot.slide = 0
+        app.spot.dirty_full = True
+        app.spot.draw()
+        print("ok   spotify   four-row draw %3d draws" % len(DRAWS))
+        if LCD.size != 1.0:
+            failures += 1
+            print("FAIL spotify   four-row size leaked: %s" % LCD.size)
+    except Exception as e:
+        failures += 1
+        print("FAIL spotify   four-row draw %r" % e)
 
     # lyric slide-up: the block is drawn at every offset of the animation
     app.spot.buf = ("now the line", "the coming line", "the one after")
@@ -365,14 +403,14 @@ def main():
             failures += 1
             print("FAIL spotify   slide did not land on the next line")
 
-    # a wrapped line moves the block by all of its rows
+    # a wrapped line moves the block by all of its rows, at its own pitch
     wrapped = long_lines[1]
     app.spot.buf = (wrapped, "B", "C")
     app.spot.slide = 0
     app.spot._start_slide(time.ticks_ms())
-    want = min(3, len(app.spot._wrap(wrapped))) * app.spot.SLOT_H
-    print("ok   spotify   wrapped slide_px=%d rows=%d"
-          % (app.spot.slide_px, len(app.spot._wrap(wrapped))))
+    want = min(app.spot.MAX_ROWS, app.spot.cur_rows) * app.spot.slot_h
+    print("ok   spotify   wrapped slide_px=%d rows=%d pitch=%d"
+          % (app.spot.slide_px, app.spot.cur_rows, app.spot.slot_h))
     if app.spot.slide_px != want:
         failures += 1
         print("FAIL spotify   wrapped slide_px=%d want %d"

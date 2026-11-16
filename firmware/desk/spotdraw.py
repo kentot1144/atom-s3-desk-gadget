@@ -12,12 +12,15 @@ class SpotDraw:
     BAND_Y, BAND_H = 21, 63
     PROG_Y, PROG_H = 84, 34
 
-    # Lyrics are a teleprompter: three rows are fully visible, a long line is
-    # wrapped into more rows, and the block slides up by the rows the finished
-    # line occupied.  EFontJA24 drawn at 0.8 gives 19 px glyphs in 21 px rows.
+    # Lyrics are a teleprompter.  Rows are usually 0.8 scale (19 px glyphs in
+    # 21 px rows, three rows in the band).  When a line needs a fourth row the
+    # renderer drops to 0.6 (14 px glyphs in 15 px rows) so four rows fit.
     SLOT_Y = 22
     SLOT_H = 21
     TXT = 0.8
+    SLOT_H_SM = 15
+    TXT_SM = 0.6
+    MAX_ROWS = 4
     SLIDE_MS = 260
 
     def _scroll(self, s, f, y, c, center=True):
@@ -114,12 +117,14 @@ class SpotDraw:
             ctext("...", F_JA, 34, LINE)
             return
         rows = getattr(self, "cur_rows", 1)
+        slot = getattr(self, "slot_h", self.SLOT_H)
         try:
-            for k in range(6):
-                yy = self.SLOT_Y - self.slide + k * self.SLOT_H
-                if yy > self.PROG_Y:
+            for k in range(len(disp)):
+                yy = self.SLOT_Y - self.slide + k * slot
+                # Keep the whole glyph row above the progress strip.
+                if yy + slot - 2 > self.PROG_Y:
                     break
-                if k < len(disp) and yy + self.SLOT_H > self.BAND_Y:
+                if yy + slot > self.BAND_Y:
                     # Rows of the line being sung are bright; the rest are hints.
                     self._lyric_row(disp[k], yy, WHITE if k < rows else MUTED)
         finally:
@@ -135,7 +140,7 @@ class SpotDraw:
         # builds, so the order matters.
         LCD.setFont(F_JA)
         try:
-            LCD.setTextSize(self.TXT)
+            LCD.setTextSize(getattr(self, "txt", self.TXT))
         except Exception:
             pass
         LCD.setTextColor(c, BLACK)
