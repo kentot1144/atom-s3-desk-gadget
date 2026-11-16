@@ -28,6 +28,7 @@ time.sleep_ms = lambda ms: None
 gc.mem_free = lambda: 100352
 
 DRAWS = []
+COLORS = []
 
 
 class Font:
@@ -52,7 +53,7 @@ class Display:
     def fillArc(self, *a): DRAWS.append("fillArc")
     def drawCircle(self, *a): DRAWS.append("drawCircle")
     def setFont(self, f): self.font = f
-    def setTextColor(self, *a): pass
+    def setTextColor(self, c, *a): COLORS.append(c)
     def setCursor(self, *a): pass
     def setTextSize(self, v): self.size = v
     def getTextSize(self): return self.size
@@ -173,7 +174,7 @@ def load_state():
 def main():
     sys.path.insert(0, ROOT)
     import desk.app as dapp
-    from desk.ui import F_JA, LCD, W, tw
+    from desk.ui import ACCENT, F_JA, LCD, MUTED, SKY, W, WHITE, tw
 
     cfg = {"location": {"tz": 9},
            "display": {"auto": False, "brightness": 120},
@@ -188,6 +189,13 @@ def main():
     app.hub.sp = state.get("sp") or {}
     app.hub.ly = state.get("ly") or {}
     app.hub.ok_at = time.ticks_ms()
+
+    # Tests must never touch the network: answer lyric syncs from fake state.
+    def default_get(path, **kw):
+        if path.startswith("/lyrics"):
+            return app.hub.ly
+        return None
+    app.hub.get = default_get
 
     failures = 0
     pages = app.page_list()
@@ -417,6 +425,61 @@ def main():
               % (app.spot.slide_px, want))
     app.spot.slide = 0
 
+    # the coming lines are sky blue, the sung line stays white
+    app.hub.ly = {"status": "success", "line": "A", "next": "B",
+                  "next2": "", "line_at": 0, "next_at": 60000}
+    app.spot.buf = ("A", "B", "")
+    app.spot._build_disp()
+    app.spot.slide = 0
+    del COLORS[:]
+    try:
+        app.spot._draw_lyrics()
+        print("ok   spotify   lyric colors %r" % (COLORS,))
+        if WHITE not in COLORS or SKY not in COLORS:
+            failures += 1
+            print("FAIL colors    expected white sung row and sky-blue next")
+        if MUTED in COLORS or ACCENT in COLORS:
+            failures += 1
+            print("FAIL colors    next line is not sky blue")
+    except Exception as e:
+        failures += 1
+        print("FAIL colors    %r" % (e,))
+
+    # periodic alignment: a due sync asks for the line at our own position
+    align_calls = []
+
+    def fake_align(path, **kw):
+        align_calls.append(path)
+        return {"status": "success", "line": "aligned line",
+                "next": "aligned next", "next2": "", "next_at": 60000}
+
+    real_get = app.hub.get
+    app.hub.get = fake_align
+    app.hub.ok_at = time.ticks_ms()
+    app.spot.lyrics = True
+    app.spot.slide = 0
+    app.spot.buf = ("old line", "other", "")
+    app.spot.line = "old line"
+    app.spot.lyr_key = ("success", "old line")
+    t = time.ticks_ms()
+    app.spot.sync_at = time.ticks_add(t, -1)
+    app.spot._sync_tick(t)
+    print("ok   spotify   align calls=%d line=%r"
+          % (len(align_calls), app.spot.buf[0]))
+    if not align_calls or not align_calls[0].startswith("/lyrics?pos="):
+        failures += 1
+        print("FAIL align     no /lyrics position request")
+    if app.spot.buf[0] != "aligned line":
+        failures += 1
+        print("FAIL align     did not take the aligned line: %r"
+              % (app.spot.buf,))
+    before = len(align_calls)
+    app.spot._sync_tick(t + 100)
+    if len(align_calls) != before:
+        failures += 1
+        print("FAIL align     sync was not throttled")
+    app.hub.get = real_get
+
     # restart page: busy -> check -> synced, verified from live progress
     for st in ("idle", "busy", "check", "done", "notsynced", "error"):
         app.rst["state"] = st
@@ -514,6 +577,38 @@ def main():
                 or app.rs_page != 0:
             failures += 1
             print("FAIL rows_tick expected 1..%d then wrap" % npages)
+
+    # Wi-Fi: home first when visible, otherwise the strongest known AP
+    from desk.wifi import Wifi as WifiCls
+
+    class ScanWlan(FakeWlan):
+        def __init__(self, aps):
+            self.aps = aps
+
+        def scan(self):
+            return self.aps
+
+    sw = ScanWlan([("far-cafe", b"", 1, -80, 0, 0),
+                   ("home", b"", 6, -41, 0, 0),
+                   ("neighbour", b"", 11, -55, 0, 0)])
+    wf = WifiCls(sw, {"wifi": [{"ssid": "far-cafe", "password": "a"},
+                               {"ssid": "neighbour", "password": "b"},
+                               {"ssid": "home", "password": "c"}]})
+    wf.home = "home"
+    order = wf._order(time.ticks_ms(), force=True)
+    names = [n[0] for n in order] if order else []
+    print("ok   wifi      home order=%r" % (names,))
+    if names[:3] != ["home", "neighbour", "far-cafe"]:
+        failures += 1
+        print("FAIL wifi      expected home then strongest visible")
+    sw.aps = [("far-cafe", b"", 1, -80, 0, 0),
+              ("neighbour", b"", 11, -55, 0, 0)]
+    order = wf._order(time.ticks_ms(), force=True)
+    names = [n[0] for n in order] if order else []
+    print("ok   wifi      away order=%r" % (names,))
+    if names[:2] != ["neighbour", "far-cafe"]:
+        failures += 1
+        print("FAIL wifi      strongest visible was not first")
 
     print("FAILURES:", failures)
     return 1 if failures else 0

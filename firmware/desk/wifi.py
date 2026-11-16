@@ -1,4 +1,4 @@
-"""Wi-Fi roaming: home network first, travel networks only if the hub is unreachable."""
+"""Wi-Fi roaming: scan for known networks, home first, then the rest."""
 import json
 import time
 from desk.const import HOME_AFTER_MS, ROAM_AFTER_MS
@@ -32,6 +32,8 @@ def _nets(cfg):
 
 # --------------------------------------------------------------------- wifi
 class Wifi:
+    SCAN_MS = 12000          # re-scan visible APs at most this often
+
     def __init__(self, wlan, cfg):
         self.wlan = wlan
         self.nets = _nets(cfg)
@@ -44,6 +46,8 @@ class Wifi:
         self.next_try = time.ticks_ms()
         self.fail = 0
         self.err = ""
+        self.vis = None           # visible SSID -> RSSI from the last scan
+        self.scan_at = time.ticks_add(time.ticks_ms(), -self.SCAN_MS)
         self._radio()
 
     def _radio(self):
@@ -77,17 +81,65 @@ class Wifi:
         except Exception:
             return False
 
+    def _scan(self, now, force=False):
+        """Visible SSIDs and their signal, or None when scanning is unsupported."""
+        if not force and self.vis is not None:
+            if time.ticks_diff(now, self.scan_at) < self.SCAN_MS:
+                return self.vis
+        self.scan_at = now
+        try:
+            rows = self.wlan.scan()
+        except Exception:
+            self.vis = None
+            return None
+        vis = {}
+        for row in rows or ():
+            try:
+                ssid = row[0]
+                if isinstance(ssid, bytes):
+                    ssid = ssid.decode()
+                if not ssid:
+                    continue
+                rssi = int(row[3])
+            except Exception:
+                continue
+            if ssid not in vis or rssi > vis[ssid]:
+                vis[ssid] = rssi
+        self.vis = vis
+        return vis
+
+    def _order(self, now, force=False):
+        """Known networks to try: home first when visible, then the strongest.
+
+        Returns None when the radio cannot scan, so the caller can fall back
+        to cycling the configured list.
+        """
+        vis = self._scan(now, force)
+        if vis is None:
+            return None
+        out = []
+        if self.home and self.home in vis:
+            for n in self.nets:
+                if n[0] == self.home:
+                    out.append(n)
+                    break
+        rest = [n for n in self.nets if n[0] != self.home and n[0] in vis]
+        rest.sort(key=lambda n: vis.get(n[0], -999), reverse=True)
+        out += rest
+        if not out:
+            # The AP may be hidden from the scan; still try what we know.
+            return list(self.nets)
+        return out
+
     def poll(self, now, hub_ok):
         up = self.up()
         if up:
             self.out_at = 0
             self.fail = 0
             if self.try_ssid:
-                for i, n in enumerate(self.nets):
-                    if n[0] == self.try_ssid:
-                        self.idx = i
-                        break
                 self.try_ssid = ""
+                self.idx = 0
+                self.vis = None    # next drop gets a fresh scan
             if self.home and self.ssid and self.ssid != self.home:
                 # a travel AP took us; if the hub is unreachable, go home
                 if not self.foreign_at:
@@ -95,13 +147,18 @@ class Wifi:
                 elif (not hub_ok and
                       time.ticks_diff(now, self.foreign_at) > HOME_AFTER_MS):
                     self.foreign_at = 0
-                    self.idx = 0
-                    self.ssid = self.home
-                    self.next_try = time.ticks_add(now, 2000)
-                    try:
-                        self.wlan.disconnect()
-                    except Exception:
-                        pass
+                    vis = self._scan(now, force=True)
+                    if vis is None or self.home in vis:
+                        self.idx = 0
+                        self.ssid = self.home
+                        self.next_try = time.ticks_add(now, 2000)
+                        try:
+                            self.wlan.disconnect()
+                        except Exception:
+                            pass
+                    else:
+                        # home is not in range: stay on the working AP
+                        self.next_try = time.ticks_add(now, 30000)
             else:
                 self.foreign_at = 0
         else:
@@ -129,9 +186,13 @@ class Wifi:
             self.fail = 0
             self.next_try = time.ticks_add(now, 1500)
             return
-        nets = self.nets
-        if self.out_at and time.ticks_diff(now, self.out_at) < ROAM_AFTER_MS:
-            nets = nets[:1]           # stay home before trying travel networks
+        nets = self._order(now)
+        if nets is None:
+            nets = self.nets
+            if self.out_at and time.ticks_diff(now, self.out_at) < ROAM_AFTER_MS:
+                nets = nets[:1]       # no scan support: stay home first
+        if not nets:
+            return
         if self.idx >= len(nets):
             self.idx = 0
         ssid, pw = nets[self.idx]

@@ -33,8 +33,10 @@ small Python hub that runs on a PC in the same LAN.
   repainted, so the screen does not flash.
 - **Synced lyrics**: hold the button for ~1 s on the Spotify screen to overlay
   a teleprompter of the current line plus the two coming lines, fetched from
-  [LRCLIB](https://lrclib.net/) through the hub. Lyrics use a smaller CJK font
-  so the whole band is visible. A line wider than the panel wraps into rows
+  [LRCLIB](https://lrclib.net/) through the hub. The sung row is white and the
+  coming lines are sky blue. Every ~4 s the device re-reads the line at its own
+  playback position, so it stays aligned with Spotify. Lyrics use a smaller CJK
+  font so the whole band is visible. A line wider than the panel wraps into rows
   (Latin words kept whole, CJK split per character); three rows are drawn at
   0.8 scale, and when a line plus its preview needs a fourth row the block
   drops to 0.6 scale so all four fit. The block slides up by the rows the
@@ -43,8 +45,11 @@ small Python hub that runs on a PC in the same LAN.
   Spotify desktop app on the hub PC, for when it hangs and needs an Alt+F4.
   Ten seconds after the request the device polls playback for six seconds and
   reports SYNCED, or NOT SYNCED when the song is not actually moving.
-- **Several remembered Wi-Fi networks**: list every SSID/password pair you use
-  and the device tries them in turn until one connects.
+- **Several remembered Wi-Fi networks**: list every SSID/password pair you use.
+  While disconnected the device scans for visible known networks, connects to
+  home first and otherwise to the strongest one, then falls back to trying the
+  configured list. `tools/wifi_import.py` copies every saved Windows profile
+  into `config.json` in one go.
 
 ## Two UI modes
 
@@ -79,7 +84,7 @@ firmware/            MicroPython code for the AtomS3
   desk/              the display client, split to fit the small heap
     const.py         shared constants and the fallback page ring
     ui.py            palette, fonts, drawing primitives
-    wifi.py          Wi-Fi roaming between home and travel networks
+    wifi.py          Wi-Fi scanning and roaming (home first)
     hub.py           HTTP polling, DNS cache, target failover
     pom.py           pomodoro, auto-brightness, alert LED
     spot.py          Spotify state machine (scroll + lyric sync)
@@ -98,6 +103,8 @@ hub/                 PC-side hub
   check_hub.vbs      silent watchdog: restarts the hub if it stops answering
   install_hub.bat/.ps1  firewall rule + silent autostart + watchdog task
 tools/               flashing and network diagnostics helpers
+  push.py            flash firmware/ over the serial REPL
+  wifi_import.py     merge every saved Windows Wi-Fi profile into config.json
 ```
 
 The firmware is split into small modules on purpose. MicroPython compiles a
@@ -122,9 +129,18 @@ needed immediately.
    ]
    ```
 
-   A single object (`{"ssid": ..., "password": ...}`) still works. When the
-   device is offline it cycles through the list every few seconds and
-   remembers the network that worked.
+   A single object (`{"ssid": ..., "password": ...}`) still works. While
+   offline the device scans for visible known networks, tries home (the first
+   entry) first and otherwise the strongest signal, then falls back to the
+   configured list.
+
+   On Windows, every profile saved on the PC can be imported at once
+   (the file is local and never committed):
+
+   ```bat
+   python tools\wifi_import.py
+   python tools\wifi_import.py --home aterm-519347-5p
+   ```
 
    The hub can also be found automatically. Add its MAC address to pin the
    right PC (optional but recommended):

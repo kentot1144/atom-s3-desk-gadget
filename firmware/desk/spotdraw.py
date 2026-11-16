@@ -1,5 +1,5 @@
 """Spotify page renderer: song rows, sliding lyrics and progress."""
-from desk.ui import ACCENT, AMBER, BLACK, F_JA, F_SM, F_TINY, GREEN, LCD, LINE, MUTED, RED, W, WHITE, bar, ctext, dots, header, mmss, rtext, t1, tl, tw
+from desk.ui import ACCENT, AMBER, BLACK, F_JA, F_SM, F_TINY, GREEN, LCD, LINE, MUTED, RED, SKY, W, WHITE, bar, ctext, dots, header, mmss, rtext, t1, tl, tw
 
 
 class SpotDraw:
@@ -22,6 +22,7 @@ class SpotDraw:
     TXT_SM = 0.6
     MAX_ROWS = 4
     SLIDE_MS = 260
+    SYNC_MS = 4000           # direct lyric alignment with live Spotify position
 
     def _scroll(self, s, f, y, c, center=True):
         w = tw(s, f)
@@ -125,8 +126,8 @@ class SpotDraw:
                 if yy + slot - 2 > self.PROG_Y:
                     break
                 if yy + slot > self.BAND_Y:
-                    # Rows of the line being sung are bright; the rest are hints.
-                    self._lyric_row(disp[k], yy, WHITE if k < rows else MUTED)
+                    # Sung rows are white; the coming lines are sky blue.
+                    self._lyric_row(disp[k], yy, WHITE if k < rows else SKY)
         finally:
             # Only lyrics are small: restore the scale for the header,
             # progress text and every page drawn after this one.

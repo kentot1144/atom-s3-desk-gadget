@@ -68,8 +68,7 @@ class Spot(SpotDraw):
         self.slide_px = self.SLOT_H
         self.slide_at = 0
         self.armed_for = None       # next_at value already animated for
-        self.recheck_at = 0         # lyric re-sync a few seconds after entry
-        self.recheck_left = 0
+        self.sync_at = 0            # next direct lyric alignment with Spotify
 
     def enter(self):
         self.sig = None
@@ -84,10 +83,9 @@ class Spot(SpotDraw):
         self._build_disp()
         self.slide = 0
         self.armed_for = None
-        # After a Spotify restart the first payload can be a few seconds
-        # stale.  Re-read the line at ~9 s and ~15 s to prove it is in sync.
-        self.recheck_at = time.ticks_add(time.ticks_ms(), 9000)
-        self.recheck_left = 2
+        # Align with the live Spotify position shortly after entering (and
+        # every few seconds after that) instead of trusting the first payload.
+        self.sync_at = time.ticks_add(time.ticks_ms(), 2000)
 
     def soft_hold(self):
         self.lyrics = not self.lyrics
@@ -157,8 +155,38 @@ class Spot(SpotDraw):
             self.dirty_full = True
 
     # -- lyrics ------------------------------------------------------
-    def _sync_lyrics(self, now):
-        ly = self.app.hub.ly
+    def _sync_tick(self, now):
+        """Ask the hub for the line at our exact playback position.
+
+        The state feed only changes when a line changes and is built once a
+        second, so it can lag a little.  Every few seconds we re-read the
+        current line with our own interpolated position, which keeps the
+        teleprompter aligned with what Spotify is actually singing.
+        """
+        if self.slide:
+            return
+        if time.ticks_diff(now, self.sync_at) < 0:
+            return
+        self.sync_at = time.ticks_add(now, self.SYNC_MS)
+        hub = self.app.hub
+        if not hub.fresh(15000):
+            return
+        get = getattr(hub, "get", None)
+        if get is None:
+            return
+        try:
+            ly = get("/lyrics?pos=%d" % int(self._pos()),
+                     timeout=1.2, max_size=3072)
+        except Exception:
+            return
+        if not isinstance(ly, dict) or not ly.get("status"):
+            return
+        hub.ly = ly
+        self._sync_lyrics(now, ly, force=True)
+
+    def _sync_lyrics(self, now, ly=None, force=False):
+        if ly is None:
+            ly = self.app.hub.ly
         if not ly:
             return
         st = ly.get("status")
@@ -176,7 +204,7 @@ class Spot(SpotDraw):
         new = (line, (ly.get("next") or "").strip(),
                (ly.get("next2") or "").strip())
         key = ("success", line)
-        if key == self.lyr_key:
+        if key == self.lyr_key and not force:
             # Same sung line; still take a fresher lookahead so the row that
             # enters from below is already filled in.
             if (not self.slide and new[1] == self.buf[1]
@@ -321,13 +349,9 @@ class Spot(SpotDraw):
                 ("ON " + (d.get("device") or "-"), F_TINY))
 
     def tick(self, now):
-        # After a restart the hub can hand out a stale line for a few seconds.
-        # Drop the cached key at ~9 s and ~15 s so the line is re-read live.
-        if self.lyrics and self.recheck_left > 0:
-            if time.ticks_diff(now, self.recheck_at) >= 0:
-                self.recheck_left -= 1
-                self.recheck_at = time.ticks_add(now, 6000)
-                self.lyr_key = None
+        # Re-align with the live playback position every few seconds.
+        if self.lyrics:
+            self._sync_tick(now)
 
         redraw = self.refresh(now)
 
