@@ -43,6 +43,7 @@ FONTS = types.SimpleNamespace(
 
 class Display:
     font = FONTS.DejaVu12
+    size = 1.0
 
     def fillScreen(self, *a): DRAWS.append("fillScreen")
     def fillRect(self, *a): DRAWS.append("fillRect")
@@ -53,6 +54,8 @@ class Display:
     def setFont(self, f): self.font = f
     def setTextColor(self, *a): pass
     def setCursor(self, *a): pass
+    def setTextSize(self, v): self.size = v
+    def getTextSize(self): return self.size
     def setBrightness(self, v): pass
     def drawString(self, *a): DRAWS.append("text")
 
@@ -62,7 +65,7 @@ class Display:
         DRAWS.append("text")
 
     def textWidth(self, s, f):
-        return len(s) * f.w
+        return int(len(s) * f.w * self.size)
 
 
 sys.modules["M5"] = types.SimpleNamespace(
@@ -170,6 +173,7 @@ def load_state():
 def main():
     sys.path.insert(0, ROOT)
     import desk.app as dapp
+    from desk.ui import F_JA, LCD, W, tw
 
     cfg = {"location": {"tz": 9},
            "display": {"auto": False, "brightness": 120},
@@ -246,9 +250,13 @@ def main():
                       % ("%s lyrics=%d" % (label, lyrics), e))
 
     app.spot.lyrics = True
-    for line in ("This is an extremely long lyric line that cannot possibly "
-                 "fit on a 128 pixel wide display in one row",
-                 "これは日本語のとても長い歌詞の行で、128ピクセルの画面には収まりません"):
+    long_lines = (
+        "This is an extremely long lyric line that cannot possibly fit on a "
+        "128 pixel wide display in one row",
+        "これは日本語のとても長い歌詞の行で、128ピクセルの画面には収まりません",
+    )
+    for line in long_lines:
+        rows = app.spot._wrap(line)
         app.spot.buf = (line, "the line after it", "and one more after that")
         app.spot.line = line
         app.spot._plan_lyrics(time.ticks_ms())
@@ -256,18 +264,42 @@ def main():
         del DRAWS[:]
         try:
             app.spot.draw()
-            print("ok   spotify   %-14s %3d draws"
-                  % ("long lyric", len(DRAWS)))
+            print("ok   spotify   long lyric rows=%d %3d draws"
+                  % (len(rows), len(DRAWS)))
         except Exception as e:
             failures += 1
             print("FAIL spotify   long lyric %r" % e)
+        if not rows or len(rows) > 3:
+            failures += 1
+            print("FAIL wrap      rows=%r" % (rows,))
+            continue
+        for r in rows:
+            LCD.setTextSize(app.spot.TXT)
+            w = tw(r, F_JA)
+            LCD.setTextSize(1)
+            if w > W - 12:
+                failures += 1
+                print("FAIL wrap      row too wide %r (%d px)" % (r, w))
+        if " " in line:
+            words = line.split()
+            pos = 0
+            for r in rows:
+                rw = r.split()
+                if words[pos:pos + len(rw)] != rw:
+                    failures += 1
+                    print("FAIL wrap      ascii words cut: %r" % (rows,))
+                    break
+                pos += len(rw)
+        elif len(rows) < 2:
+            failures += 1
+            print("FAIL wrap      japanese line was not split: %r" % (rows,))
 
     # lyric slide-up: the block is drawn at every offset of the animation
     app.spot.buf = ("now the line", "the coming line", "the one after")
     app.spot.line = "now the line"
     app.spot.lyrics = True
     app.spot._plan_lyrics(time.ticks_ms())
-    for off in (0, 6, 13, 20, 26):
+    for off in (0, 6, 13, 20):
         app.spot.slide = off
         app.spot.dirty_full = True
         del DRAWS[:]
@@ -293,6 +325,9 @@ def main():
         failures += 1
         print("FAIL spotify   slide did not start")
     else:
+        if app.spot.slide_px != app.spot.SLOT_H:
+            failures += 1
+            print("FAIL spotify   one-row slide_px=%d" % app.spot.slide_px)
         app.spot.tick(now + 120)
         mid = app.spot.slide
         app.spot.tick(now + app.spot.SLIDE_MS + 10)
@@ -305,6 +340,81 @@ def main():
         if app.spot.buf[:2] != ("B", "C") or app.spot.slide:
             failures += 1
             print("FAIL spotify   slide did not land on the next line")
+
+    # a wrapped line moves the block by all of its rows
+    wrapped = long_lines[1]
+    app.spot.buf = (wrapped, "B", "C")
+    app.spot.slide = 0
+    app.spot._start_slide(time.ticks_ms())
+    want = min(3, len(app.spot._wrap(wrapped))) * app.spot.SLOT_H
+    print("ok   spotify   wrapped slide_px=%d rows=%d"
+          % (app.spot.slide_px, len(app.spot._wrap(wrapped))))
+    if app.spot.slide_px != want:
+        failures += 1
+        print("FAIL spotify   wrapped slide_px=%d want %d"
+              % (app.spot.slide_px, want))
+    app.spot.slide = 0
+
+    # restart page: busy -> check -> synced, verified from live progress
+    for st in ("idle", "busy", "check", "done", "notsynced", "error"):
+        app.rst["state"] = st
+        app.rst["msg"] = "restarting"
+        app.idx = 0
+        del DRAWS[:]
+        try:
+            app.draw_restart({"k": "restart", "t": "RESTART"})
+            print("ok   restart   %-14s %3d draws" % (st, len(DRAWS)))
+        except Exception as e:
+            failures += 1
+            print("FAIL restart   %-14s %r" % (st, e))
+    app.rst["state"] = "idle"
+
+    prog = [5000]
+
+    def fake_sp(path, **k):
+        prog[0] += 1000
+        return {"sp": {"status": "success", "is_playing": True,
+                       "song": "Way Back Home", "progress_ms": prog[0],
+                       "duration_ms": 193000}}
+
+    real_get = app.hub.get
+    app.hub.get = fake_sp
+    r = app.rst
+    base_t = time.ticks_ms()
+    r["state"] = "check"
+    r["check_at"] = base_t
+    r["at"] = time.ticks_add(base_t, -1000)
+    r["good"] = 0
+    r["prog"] = -1
+    r["song"] = ""
+    for i in range(7):
+        app.restart_check(base_t + i * 1000)
+    print("ok   restart   check moved state=%s good=%d"
+          % (r["state"], r["good"]))
+    if r["state"] != "done" or r["good"] < 2:
+        failures += 1
+        print("FAIL restart   playback check did not confirm sync")
+
+    # a frozen payload must not pass as synced
+    r["state"] = "check"
+    r["check_at"] = base_t
+    r["at"] = time.ticks_add(base_t, -1000)
+    r["good"] = 0
+    r["prog"] = -1
+    r["song"] = ""
+    app.hub.get = lambda path, **k: {
+        "sp": {"status": "success", "is_playing": True,
+               "song": "Stale", "progress_ms": 42000,
+               "duration_ms": 193000}}
+    for i in range(7):
+        app.restart_check(base_t + i * 1000)
+    print("ok   restart   frozen state=%s good=%d"
+          % (r["state"], r["good"]))
+    if r["state"] != "notsynced":
+        failures += 1
+        print("FAIL restart   frozen payload was not rejected")
+    app.hub.get = real_get
+    r["state"] = "idle"
 
     # rows sub-pages: each page draws, and the timer advances then wraps
     auto = None

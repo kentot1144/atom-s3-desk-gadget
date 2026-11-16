@@ -12,10 +12,12 @@ class SpotDraw:
     BAND_Y, BAND_H = 21, 63
     PROG_Y, PROG_H = 84, 34
 
-    # Lyrics are a teleprompter: three fixed slots inside the band, and the
-    # whole block slides up by one slot when the next line starts.
+    # Lyrics are a teleprompter: three rows are fully visible, a long line is
+    # wrapped into more rows, and the block slides up by the rows the finished
+    # line occupied.  EFontJA24 drawn at 0.8 gives 19 px glyphs in 21 px rows.
     SLOT_Y = 22
-    SLOT_H = 26
+    SLOT_H = 21
+    TXT = 0.8
     SLIDE_MS = 260
 
     def _scroll(self, s, f, y, c, center=True):
@@ -94,15 +96,6 @@ class SpotDraw:
             t1("ON", F_TINY, 6, 73, LINE)
             t1(dev[0][3:][:16], F_TINY, 24, 73, ACCENT)
 
-    def _slot(self, s, y, c, center, off=0):
-        if not s:
-            return
-        w = tw(s, F_JA)
-        if center and w <= W - 12:
-            t1(s, F_JA, (W - w) // 2, y, c)
-        else:
-            t1(s, F_JA, 6 - off, y, c)
-
     def _draw_lyrics(self):
         d = self.app.hub.ly or {}
         st = d.get("status")
@@ -116,17 +109,29 @@ class SpotDraw:
                 ctext("LYRICS ERROR", F_SM, 38, RED)
                 ctext((d.get("message") or "")[:18], F_TINY, 58, MUTED)
             return
-        buf = self.buf
-        if not buf[0] and not buf[1]:
+        disp = getattr(self, "disp", ())
+        if not disp:
             ctext("...", F_JA, 34, LINE)
             return
-        y = self.SLOT_Y - self.slide
-        # Slot 0 is the sung line; the block below is what comes next.
-        self._slot(buf[0], y, WHITE, True, self.pos)
-        self._slot(buf[1], y + self.SLOT_H, MUTED, False)
-        self._slot(buf[2], y + 2 * self.SLOT_H, MUTED, False)
-        if not buf[0]:
-            ctext("...", F_JA, 34, LINE)
+        rows = getattr(self, "cur_rows", 1)
+        for k in range(6):
+            yy = self.SLOT_Y - self.slide + k * self.SLOT_H
+            if yy > self.PROG_Y:
+                break
+            if k < len(disp) and yy + self.SLOT_H > self.BAND_Y:
+                # Rows of the line being sung are bright; the rest are hints.
+                self._lyric_row(disp[k], yy, WHITE if k < rows else MUTED)
+
+    def _lyric_row(self, s, y, c):
+        # Font first, then the size: setFont can reset the scale on some
+        # builds, so the order matters.
+        LCD.setFont(F_JA)
+        try:
+            LCD.setTextSize(self.TXT)
+        except Exception:
+            pass
+        LCD.setTextColor(c, BLACK)
+        LCD.drawString(s, 6, int(y))
 
     def _draw_prog(self):
         d = self.app.hub.sp

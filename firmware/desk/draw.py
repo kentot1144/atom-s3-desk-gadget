@@ -135,18 +135,25 @@ class AppDraw:
         LCD.fillScreen(BLACK)
         self._head(p, PURPLE)
         r = self.rst
-        c = GREEN if r["state"] == "busy" else (
-            RED if r["state"] == "error" else ACCENT2)
+        st = r["state"]
+        c = GREEN if st == "busy" else (
+            RED if st in ("error", "notsynced") else ACCENT2)
         LCD.fillCircle(64, 46, 19, c)
         LCD.fillTriangle(58, 35, 58, 57, 76, 46, BLACK)
         ctext("SPOTIFY", F_SM, 70, WHITE)
-        if r["state"] == "busy":
+        if st == "busy":
             ctext("RESTARTING" + "." * r["dots"], F_TINY, 90, AMBER)
             ctext("on the hub PC", F_TINY, 104, LINE)
-        elif r["state"] == "done":
-            ctext("DONE", F_SM, 90, GREEN)
-            ctext("check spotify", F_TINY, 106, MUTED)
-        elif r["state"] == "error":
+        elif st == "check":
+            ctext("VERIFYING" + "." * r["dots"], F_TINY, 90, AMBER)
+            ctext("playback is live", F_TINY, 104, LINE)
+        elif st == "done":
+            ctext("SYNCED", F_SM, 90, GREEN)
+            ctext("spotify is playing", F_TINY, 106, MUTED)
+        elif st == "notsynced":
+            ctext("NOT SYNCED", F_SM, 90, RED)
+            ctext("double click retry", F_TINY, 106, LINE)
+        elif st == "error":
             ctext(r["msg"], F_TINY, 90, RED)
             ctext("try again", F_TINY, 104, LINE)
         else:

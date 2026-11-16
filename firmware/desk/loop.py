@@ -42,7 +42,40 @@ class AppLoop:
             r["msg"] = (self.hub.err or "HUB OFFLINE")[:18]
             r["sent"] = now
         r["at"] = time.ticks_add(now, -5000)
+        r["check_at"] = 0
+        r["checks"] = 0
+        r["good"] = 0
+        r["prog"] = -1
+        r["song"] = ""
         self.draw_restart(self.page())
+
+    def restart_check(self, now):
+        """Prove playback really resumed after the restart.
+
+        Polls the hub directly about once a second for six seconds and counts
+        samples where the same song is playing and the position has moved, so a
+        stale payload copied over from before the restart cannot pass.
+        """
+        r = self.rst
+        if time.ticks_diff(now, r["at"]) < 900:
+            return False
+        r["at"] = now
+        r["dots"] = (r["dots"] + 1) % 4
+        d = self.hub.get("/state?only=sp", timeout=2.0, max_size=2048)
+        if d:
+            self.hub.apply(d)
+            sp = self.hub.sp or {}
+            ok = (sp.get("status") == "success" and sp.get("is_playing")
+                  and sp.get("song"))
+            p = int(sp.get("progress_ms") or 0)
+            song = sp.get("song") or ""
+            if ok and r["prog"] >= 0 and p != r["prog"] and song == r["song"]:
+                r["good"] += 1
+            r["prog"] = p if ok else -1
+            r["song"] = song
+        if time.ticks_diff(now, r["check_at"]) >= 6000:
+            r["state"] = "done" if r["good"] >= 2 else "notsynced"
+        return True
 
     def action(self):
         p = self.page()
@@ -287,11 +320,19 @@ class AppLoop:
                 r = self.rst
                 if r["state"] == "busy":
                     if time.ticks_diff(now, r["sent"]) > 10000:
-                        r["state"] = "done"
+                        r["state"] = "check"
+                        r["check_at"] = now
+                        r["at"] = time.ticks_add(now, -1000)
+                        r["good"] = 0
+                        r["prog"] = -1
+                        r["song"] = ""
                         self.dirty = True
                     elif time.ticks_diff(now, r["at"]) > 400:
                         r["at"] = now
                         r["dots"] = (r["dots"] + 1) % 4
+                        self.dirty = True
+                elif r["state"] == "check":
+                    if self.restart_check(now):
                         self.dirty = True
                 elif (r["state"] == "error" and
                       time.ticks_diff(now, r["sent"]) > 5000):

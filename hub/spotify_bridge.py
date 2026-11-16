@@ -127,6 +127,7 @@ def lyrics(pos=None):
     plain = entry.get("plain") or []
     line = ""
     nxt = ""
+    nxt2 = ""
     line_at = None
     next_at = None
     if synced:
@@ -145,6 +146,10 @@ def lyrics(pos=None):
         elif i < 0:
             nxt = synced[0][1]
             next_at = synced[0][0]
+        if i + 2 < len(synced):
+            # second lookahead: the device slides the coming line in from
+            # below, so it needs the line after the next one
+            nxt2 = synced[i + 2][1]
     elif plain:
         i = 0
         if dur > 0:
@@ -157,12 +162,15 @@ def lyrics(pos=None):
             next_at = int((i + 1) * span)
         if i + 1 < len(plain):
             nxt = plain[i + 1]
+        if i + 2 < len(plain):
+            nxt2 = plain[i + 2]
 
     return {
         "status": "success",
         "synced": bool(synced),
         "line": line,
         "next": nxt,
+        "next2": nxt2,
         # line timing lets the device scroll a long line just fast enough
         # to finish before the next one starts
         "line_at": line_at,

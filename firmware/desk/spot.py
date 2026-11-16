@@ -1,14 +1,40 @@
 """Spotify page state machine: horizontal scroll, lyric slide-up and timing.
 
-Lyrics behave like a small teleprompter: the current line sits at the top,
-the coming lines sit below it, and when the next line starts the whole block
-slides up by one row.  Long lines still ping-pong sideways, but only inside
-their own row.
+Lyrics behave like a small teleprompter.  The line being sung is on top and the
+coming lines are below; a line that is wider than the panel is wrapped into
+extra rows instead of scrolling sideways, and when the line changes the block
+slides up by however many rows the finished line used.
 """
 import time
 
-from desk.ui import F_JA, F_TINY, W, tw
+from desk.ui import F_JA, F_TINY, LCD, W, tw
 from desk.spotdraw import SpotDraw
+
+
+def _atoms(s):
+    """Split a line into units that a row break may fall between.
+
+    Latin words stay whole so they are never cut mid-word; CJK characters
+    each stand alone, which is where Japanese lyrics naturally break.
+    """
+    out = []
+    word = ""
+    for ch in s:
+        if ch == " ":
+            if word:
+                out.append(word)
+                word = ""
+            out.append(" ")
+        elif ord(ch) > 0x2FF:
+            if word:
+                out.append(word)
+                word = ""
+            out.append(ch)
+        else:
+            word += ch
+    if word:
+        out.append(word)
+    return out
 
 
 class Spot(SpotDraw):
@@ -31,9 +57,17 @@ class Spot(SpotDraw):
         self.lyr_key = None
         self.buf = ("", "", "")     # current line, next line, next-next line
         self.line = ""
+        self.w_cur = ()             # wrapped rows of each buffered line
+        self.w_next = ()
+        self.w_n2 = ()
+        self.disp = ()              # the rows on screen, top to bottom
+        self.cur_rows = 1           # rows the line being sung occupies
         self.slide = 0              # px the lyric block has slid up
+        self.slide_px = self.SLOT_H
         self.slide_at = 0
         self.armed_for = None       # next_at value already animated for
+        self.recheck_at = 0         # lyric re-sync a few seconds after entry
+        self.recheck_left = 0
 
     def enter(self):
         self.sig = None
@@ -45,20 +79,29 @@ class Spot(SpotDraw):
         self.lyr_key = None
         self.buf = ("", "", "")
         self.line = ""
+        self._build_disp()
         self.slide = 0
         self.armed_for = None
+        # After a Spotify restart the first payload can be a few seconds
+        # stale.  Re-read the line at ~9 s and ~15 s to prove it is in sync.
+        self.recheck_at = time.ticks_add(time.ticks_ms(), 9000)
+        self.recheck_left = 2
 
     def soft_hold(self):
         self.lyrics = not self.lyrics
         self.lyr_key = None
         self.buf = ("", "", "")
         self.line = ""
+        self._build_disp()
         self.slide = 0
         self.armed_for = None
         self.long = False
         self.pos = 0
         self.dir = 1
         self.dirty_full = True
+        if not self.lyrics:
+            # Back to the song rows: re-measure them for sideways scrolling.
+            self._plan(self.app.hub.sp or {})
 
     def _pos(self):
         return self.app.hub.progress()
@@ -137,6 +180,7 @@ class Spot(SpotDraw):
             if (not self.slide and new[1] == self.buf[1]
                     and new[2] and new[2] != self.buf[2]):
                 self.buf = (self.buf[0], self.buf[1], new[2])
+                self._build_disp()
                 self.dirty_lines = True
             return
         self.lyr_key = key
@@ -150,6 +194,8 @@ class Spot(SpotDraw):
         if new[0] == cur:
             # Same line, later payload (lookahead moved on).
             self.buf = new
+            self._build_disp()
+            self.dirty_lines = True
             return
         if new[0] == self.buf[1]:
             # The hub is one line ahead of what we show: slide now.
@@ -167,6 +213,10 @@ class Spot(SpotDraw):
     def _start_slide(self, now):
         if not self.buf[1]:
             return False
+        self._build_disp()
+        # A long line can use two or three rows; the block moves by all of
+        # them so the next line lands at the top.
+        self.slide_px = min(3, self.cur_rows) * self.SLOT_H
         self.slide = 1
         self.slide_at = now
         self.pos = 0
@@ -182,31 +232,65 @@ class Spot(SpotDraw):
         self.dirty_full = True
 
     def _plan_lyrics(self, now):
-        s = (self.buf[0] or "").strip()
-        self.max_off = max(0, tw(s, F_JA) - (W - 12))
-        self.long = self.max_off > 0
+        self._build_disp()
+        self.long = False
+        self.max_off = 0
         self.pos = 0
         self.dir = 1
         self.frame_at = now
         self.hold_until = time.ticks_add(now, self.LYRIC_HOLD_MS)
-        self.step = self._lyric_step()
+        self.step = 1
 
-    def _lyric_step(self):
-        if not self.long:
-            return 1
-        step = self.LYRIC_STEP
-        na = (self.app.hub.ly or {}).get("next_at")
-        if na:
-            remain = int(na) - self._pos() - 2 * self.LYRIC_HOLD_MS
-            if remain < 200:
-                remain = 200
-            frames = max(1, remain // self.LYRIC_FRAME_MS)
-            need = self.max_off // frames + 1
-            if need > step:
-                step = need
-        if step > self.LYRIC_STEP_MAX:
-            step = self.LYRIC_STEP_MAX
-        return step
+    # -- lyric wrapping ----------------------------------------------
+    def _wrap(self, s, limit=3):
+        """Rows for one lyric line, at most three, measured at the draw size."""
+        s = (s or "").strip()
+        if not s:
+            return ()
+        try:
+            LCD.setTextSize(self.TXT)
+        except Exception:
+            pass
+        maxw = W - 12
+        rows = []
+        row = ""
+        try:
+            for atom in _atoms(s):
+                if not row and atom == " ":
+                    continue
+                if tw(row + atom, F_JA) <= maxw:
+                    row += atom
+                    continue
+                if row.strip():
+                    rows.append(row.strip())
+                    row = ""
+                    if len(rows) >= limit:
+                        return tuple(rows)
+                if atom == " ":
+                    continue
+                # A single word wider than the panel: split it by characters.
+                for ch in atom:
+                    if row and tw(row + ch, F_JA) > maxw:
+                        rows.append(row)
+                        row = ""
+                        if len(rows) >= limit:
+                            return tuple(rows)
+                    row += ch
+            if row.strip() and len(rows) < limit:
+                rows.append(row.strip())
+        finally:
+            try:
+                LCD.setTextSize(1)
+            except Exception:
+                pass
+        return tuple(rows[:limit])
+
+    def _build_disp(self):
+        self.w_cur = self._wrap(self.buf[0])
+        self.w_next = self._wrap(self.buf[1])
+        self.w_n2 = self._wrap(self.buf[2])
+        self.disp = self.w_cur + self.w_next + self.w_n2
+        self.cur_rows = len(self.w_cur) or 1
 
     def _plan(self, d):
         self.max_off = 0
@@ -223,6 +307,14 @@ class Spot(SpotDraw):
                 ("ON " + (d.get("device") or "-"), F_TINY))
 
     def tick(self, now):
+        # After a restart the hub can hand out a stale line for a few seconds.
+        # Drop the cached key at ~9 s and ~15 s so the line is re-read live.
+        if self.lyrics and self.recheck_left > 0:
+            if time.ticks_diff(now, self.recheck_at) >= 0:
+                self.recheck_left -= 1
+                self.recheck_at = time.ticks_add(now, 6000)
+                self.lyr_key = None
+
         redraw = self.refresh(now)
 
         # Start the slide a moment before the next line so it lands on time
@@ -241,15 +333,17 @@ class Spot(SpotDraw):
                 self._land(now)
             else:
                 t = el / self.SLIDE_MS
-                # ease out: the line settles instead of stopping dead
-                self.slide = int(self.SLOT_H * (1.0 - (1.0 - t) * (1.0 - t)))
+                # ease out: the block settles instead of stopping dead
+                self.slide = int(self.slide_px
+                                 * (1.0 - (1.0 - t) * (1.0 - t)))
                 if self.slide < 1:
                     self.slide = 1
                 self.dirty_lines = True
             self.animating = True
             return True
 
-        if not self.long:
+        # Lyrics never scroll sideways: rows are wrapped instead.
+        if not self.long or self.lyrics:
             self.animating = False
             return redraw
         self.animating = True

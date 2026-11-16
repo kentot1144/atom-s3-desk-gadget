@@ -838,6 +838,140 @@ def calendar_next(force=False):
         return data
 
 
+# --------------------------------------------------------------- weather
+#
+# The device used to fetch this itself.  That meant DNS + a TLS connection to
+# the internet from a chip whose whole job is to show what the hub says, and a
+# failed lookup on a weak link was one more way to wedge it.  The hub has a
+# stable connection, so it fetches the forecast and publishes it as state.
+
+_WX_CACHE = {"at": 0.0, "data": None, "err": ""}
+_WX_TTL_S = 600
+
+
+def _wx_open_meteo(lat, lon, now):
+    url = ("https://api.open-meteo.com/v1/forecast"
+           "?latitude=%.4f&longitude=%.4f"
+           "&current=temperature_2m,relative_humidity_2m,"
+           "weather_code,wind_speed_10m"
+           "&daily=temperature_2m_max,temperature_2m_min"
+           "&timezone=auto&forecast_days=1") % (lat, lon)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "AtomS3-Desk/1.0",
+        "Accept": "application/json",
+    })
+    with _OPENER.open(req, timeout=8) as r:
+        data = json.loads(r.read().decode("utf-8", "replace"))
+    cur = data.get("current") or {}
+    day = data.get("daily") or {}
+    return {
+        "status": "ok",
+        "temp": cur.get("temperature_2m"),
+        "hum": cur.get("relative_humidity_2m"),
+        "code": cur.get("weather_code"),
+        "wind": cur.get("wind_speed_10m"),
+        "tmax": (day.get("temperature_2m_max") or [None])[0],
+        "tmin": (day.get("temperature_2m_min") or [None])[0],
+        "at": int(now),
+        "src": "open-meteo",
+    }
+
+
+# wttr.in speaks WWO condition codes; fold them into the WMO codes the page
+# text table already knows.
+_WWO_WMO = {
+    113: 0, 116: 2, 119: 3, 122: 3, 143: 45, 248: 45, 260: 48,
+    176: 80, 263: 51, 266: 51, 293: 80, 296: 61, 299: 63, 302: 63,
+    305: 65, 308: 65, 353: 80, 356: 81, 359: 82,
+    179: 71, 182: 66, 185: 56, 281: 56, 284: 57, 311: 66, 314: 67,
+    317: 71, 320: 73, 323: 71, 326: 71, 329: 73, 332: 73,
+    335: 75, 338: 75, 227: 71, 230: 75,
+    350: 77, 374: 77, 377: 77, 362: 85, 365: 86, 368: 85, 371: 86,
+    200: 95, 386: 95, 389: 95, 392: 95, 395: 95,
+}
+
+
+def _wx_wttr(lat, lon, now):
+    """Fallback current conditions.  open-meteo is unreachable from some
+    networks (the TLS handshake is reset), and wttr.in keeps the clock page
+    from sitting on HUB WX ERROR forever."""
+    url = "https://wttr.in/%.4f,%.4f?format=j1" % (lat, lon)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "AtomS3-Desk/1.0",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as r:
+        data = json.loads(r.read().decode("utf-8", "replace"))
+    cur = (data.get("current_condition") or [{}])[0]
+    day = (data.get("weather") or [{}])[0]
+
+    def num(v):
+        try:
+            return float(v)
+        except Exception:
+            return None
+
+    return {
+        "status": "ok",
+        "temp": num(cur.get("temp_C")),
+        "hum": num(cur.get("humidity")),
+        "code": _WWO_WMO.get(int(cur.get("weatherCode") or 113), 3),
+        "wind": num(cur.get("windspeedKmph")),
+        "tmax": num(day.get("maxtempC")),
+        "tmin": num(day.get("mintempC")),
+        "at": int(now),
+        "src": "wttr",
+    }
+
+
+def weather_now(force=False):
+    """Current conditions, cached for ten minutes.
+
+    Tries open-meteo first, then wttr.in.  Both are cached the same way, so a
+    fallback only costs the extra request when the first one fails.
+    """
+    now = time.time()
+    if (not force and _WX_CACHE["data"] is not None
+            and now - _WX_CACHE["at"] < _WX_TTL_S):
+        return _WX_CACHE["data"]
+    loc = CFG.get("location") or {}
+    try:
+        lat = float(loc.get("lat", 0.0))
+        lon = float(loc.get("lon", 0.0))
+    except Exception:
+        lat = lon = 0.0
+    if not lat and not lon:
+        # hub_config.json has no location yet; the device shows "NO LOCATION".
+        return {"status": "disabled"}
+    errs = []
+    for fetch in (_wx_open_meteo, _wx_wttr):
+        try:
+            out = fetch(lat, lon, now)
+        except Exception as e:
+            errs.append("%s: %s" % (fetch.__name__, str(e)[:40]))
+            continue
+        _WX_CACHE["data"] = out
+        _WX_CACHE["at"] = now
+        _WX_CACHE["err"] = ""
+        return out
+    msg = "; ".join(errs)[:60]
+    _WX_CACHE["err"] = msg
+    if _WX_CACHE["data"] is None:
+        _WX_CACHE["data"] = {"status": "error",
+                             "message": msg[:40], "at": int(now)}
+    return _WX_CACHE["data"]
+
+
+def weather_loop():
+    """Keep the forecast warm so state_delta() never waits on the network."""
+    while True:
+        try:
+            weather_now(force=True)
+        except Exception:
+            pass
+        time.sleep(_WX_TTL_S)
+
+
 # ----------------------------------------------------------------- stats
 
 def stats():
@@ -884,7 +1018,7 @@ def stats():
 # /stream keeps the connection open and pushes the same deltas, so the atom
 # is a display, not a second source of truth.
 
-_STATE_KEYS = ("pc", "svc", "sp", "ly", "cal", "ev")
+_STATE_KEYS = ("pc", "svc", "sp", "ly", "cal", "ev", "wx", "ui")
 _STATE_LOCK = threading.Lock()
 _STATE_REV = {}
 _STATE_SIG = {}
@@ -915,6 +1049,246 @@ def _state_svc(st):
     }
 
 
+# ---------------------------------------------------------- display pages
+# The atom is a thin display: the hub turns the state into ready-to-draw
+# pages, including every string and colour.  Colours are indexes into the
+# device palette (see firmware/app.py PAL):
+#   0 black 1 panel 2 ghost 3 line 4 white 5 muted 6 accent 7 accent2
+#   8 green 9 amber 10 orange 11 yellow 12 red 13 purple
+C_LINE, C_WHITE, C_MUTED = 3, 4, 5
+C_ACCENT, C_ACCENT2, C_GREEN = 6, 7, 8
+C_AMBER, C_ORANGE, C_RED = 9, 10, 12
+
+_WX_TXT = {
+    0: "CLEAR", 1: "MOSTLY CLEAR", 2: "PARTLY", 3: "CLOUDY",
+    45: "FOG", 48: "FOG",
+    51: "DRIZZLE", 53: "DRIZZLE", 55: "DRIZZLE", 56: "DRIZZLE",
+    57: "DRIZZLE",
+    61: "RAIN", 63: "RAIN", 65: "RAIN", 66: "RAIN", 67: "RAIN",
+    71: "SNOW", 73: "SNOW", 75: "SNOW", 77: "SNOW",
+    80: "SHOWERS", 81: "SHOWERS", 82: "SHOWERS",
+    85: "SNOW", 86: "SNOW",
+    95: "STORM", 96: "STORM", 99: "STORM",
+}
+
+
+def _ui_cut(v, n):
+    return (str(v) if v is not None else "").replace("\n", " ")[:n]
+
+
+def _ui_pct_color(p):
+    if p < 60:
+        return C_GREEN
+    if p < 85:
+        return C_AMBER
+    return C_RED
+
+
+def _ui_ago(sec):
+    if sec < 60:
+        return "NOW"
+    if sec < 3600:
+        return "%dm" % (sec // 60)
+    if sec < 86400:
+        return "%dh%02dm" % (sec // 3600, (sec % 3600) // 60)
+    return "%dd%02dh" % (sec // 86400, (sec % 86400) // 3600)
+
+
+def _ui_in(sec):
+    if sec <= 0:
+        return "NOW"
+    if sec < 60:
+        return "IN <1m"
+    if sec < 3600:
+        return "IN %dm" % (sec // 60)
+    if sec < 86400:
+        return "IN %dh%02dm" % (sec // 3600, (sec % 3600) // 60)
+    return "IN %dd %dh" % (sec // 86400, (sec % 86400) // 3600)
+
+
+def _ui_cal(cal, now):
+    if not cal or cal.get("status") != "ok" or cal.get("none"):
+        return ""
+    title = _ui_cut(cal.get("title") or "EVENT", 30)
+    start = int(cal.get("start") or 0)
+    end = int(cal.get("end") or 0)
+    if start and start > now:
+        return _ui_in(start - now) + " " + title
+    if start and end > now:
+        return "NOW " + title
+    return ""
+
+
+def _ui_kind_color(kind):
+    if kind == "mc_join":
+        return C_GREEN
+    if kind == "mc_leave":
+        return C_RED
+    if kind == "mc_move":
+        return C_AMBER
+    return C_ACCENT
+
+
+def _ui_svc_row(s):
+    up = bool(s.get("up"))
+    crit = bool(s.get("critical"))
+    kind = s.get("kind") or ""
+    r = {"l": _ui_cut(s.get("name") or "?", 11),
+         "d": C_GREEN if up else C_RED,
+         "c": C_WHITE if up else C_MUTED}
+    if up and kind == "mc" and s.get("max"):
+        r["v"] = "%d/%d" % (int(s.get("players") or 0),
+                            int(s.get("max") or 0))
+        r["vc"] = C_GREEN
+    elif up:
+        # 100 ms granularity keeps the ui revision from ticking every second
+        ms = (int(s.get("ms") or 0) // 100) * 100
+        if ms < 1000:
+            r["v"] = "UP %dms" % ms
+        else:
+            r["v"] = "UP %d.%ds" % (ms // 1000, (ms % 1000) // 100)
+        r["vc"] = C_GREEN if ms < 300 else C_AMBER
+    else:
+        r["v"] = "DOWN"
+        r["vc"] = C_RED
+    port = int(s.get("port") or 0)
+    sub = _ui_cut(s.get("note") or (str(port) if port else kind.upper()), 18)
+    if crit:
+        sub = (sub + " CRIT").strip()
+    r["s"] = sub
+    if crit:
+        r["sc"] = C_ORANGE if up else C_RED
+    else:
+        r["sc"] = C_MUTED if up else C_RED
+    return r
+
+
+def _state_ui(pc, svc, wx, cal, ev):
+    """Render-ready page list for the atom.
+
+    ``norm`` is the normal page ring, ``spot`` the Spotify ring (selected by a
+    3 s hold).  ``al`` drives the red header/LED.  The clock and focus pages
+    carry only their variable extras; the atom draws those two itself so the
+    clock keeps ticking and the pomodoro keeps running without the hub.
+    """
+    now = int(time.time())
+    alert = 1 if svc.get("alert") else 0
+    norm = []
+
+    temp = None
+    if wx.get("status") == "ok":
+        try:
+            temp = int(round(float(wx.get("temp"))))
+        except Exception:
+            temp = None
+    norm.append({"k": "clock", "temp": temp,
+                 "cal": _ui_cal(cal, now), "al": alert})
+
+    if wx.get("status") == "ok":
+        try:
+            t = int(round(float(wx.get("temp"))))
+            lo = int(round(float(wx.get("tmin"))))
+            hi = int(round(float(wx.get("tmax"))))
+            hum = int(round(float(wx.get("hum"))))
+        except Exception:
+            t = lo = hi = hum = 0
+        norm.append({
+            "k": "big", "t": "WEATHER", "v": str(t),
+            "cond": _WX_TXT.get(wx.get("code"), "?"),
+            "sub": "LOW %d   HIGH %d   %d%%" % (lo, hi, hum),
+        })
+    elif wx.get("status") == "error":
+        norm.append({"k": "msg", "t": "WEATHER",
+                     "m": "HUB WX ERROR",
+                     "m2": _ui_cut(wx.get("message"), 22)})
+    else:
+        norm.append({"k": "msg", "t": "WEATHER",
+                     "m": "NO LOCATION",
+                     "m2": "set hub location"})
+
+    norm.append({"k": "focus", "t": "FOCUS"})
+
+    if pc.get("host"):
+        rows = []
+        for name, val in (("CPU", (pc.get("cpu") or {}).get("percent", 0)),
+                          ("MEM", (pc.get("mem") or {}).get("percent", 0))):
+            try:
+                p = int(round(float(val or 0)))
+            except Exception:
+                p = 0
+            rows.append({"l": name, "v": "%d%%" % p, "p": p,
+                         "pc": _ui_pct_color(p), "vc": C_WHITE})
+        gpu = pc.get("gpu") or {}
+        if gpu:
+            try:
+                g = int(round(float(gpu.get("util") or 0)))
+                gtemp = int(round(float(gpu.get("temp") or 0)))
+            except Exception:
+                g = gtemp = 0
+            rows.append({"l": "GPU", "v": "%d" % gtemp, "deg": 1,
+                         "p": g, "pc": _ui_pct_color(g), "vc": C_ORANGE})
+        else:
+            rows.append({"l": "GPU", "v": "--", "vc": C_LINE})
+        up = int(pc.get("uptime") or 0)
+        norm.append({
+            "k": "rows", "t": "PC", "hc": C_RED if alert else C_ACCENT,
+            "rows": rows,
+            "foot": "UPTIME %dd %dh %dm" % (
+                up // 86400, (up % 86400) // 3600, (up % 3600) // 60),
+        })
+    else:
+        norm.append({"k": "msg", "t": "PC", "m": "NO PC DATA",
+                     "m2": "hub offline?"})
+
+    svcs = svc.get("services") or []
+    if svcs:
+        # One page for every service.  The atom shows four at a time and
+        # scrolls the window itself ("auto"), so the page ring stays short no
+        # matter how many checks are configured.
+        ups = sum(1 for s in svcs if s.get("up"))
+        norm.append({"k": "rows",
+                     "t": "SERVERS",
+                     "hc": C_RED if alert else C_ACCENT,
+                     "rows": [_ui_svc_row(s) for s in svcs],
+                     "auto": 1,
+                     "foot": "%d/%d UP" % (ups, len(svcs)),
+                     "fc": C_GREEN if ups == len(svcs) else C_AMBER})
+    else:
+        norm.append({"k": "msg", "t": "SERVERS", "m": "NO SERVICES",
+                     "m2": "hub offline?"})
+
+    events = list(reversed((ev or {}).get("events") or []))[:3]
+    if events:
+        rows = []
+        for e in events:
+            rows.append({
+                "l": _ui_cut(e.get("title") or "?", 15),
+                "s": _ui_cut(e.get("body") or (e.get("kind") or "").upper(), 25),
+                "d": _ui_kind_color(e.get("kind")),
+                "c": C_WHITE,
+            })
+        norm.append({"k": "notice", "t": "NOTICES", "rows": rows,
+                     "more": max(0, len((ev or {}).get("events") or []) - 3)})
+    else:
+        norm.append({"k": "notice", "t": "NOTICES", "rows": [],
+                     "more": 0})
+
+    norm.append({"k": "restart", "t": "RESTART"})
+    norm.append({"k": "face", "t": "FACE", "al": alert})
+
+    upt = svc.get("uptime") or {}
+    norm.append({
+        "k": "status", "t": "STATUS",
+        "up": max(0, int(upt.get("total") or len(svcs)) -
+                  int(upt.get("down") or 0)),
+        "tot": int(upt.get("total") or len(svcs)),
+        "last": int(upt.get("last_down") or 0),
+    })
+
+    return {"al": alert, "norm": norm,
+            "spot": [{"k": "spotify", "t": "SPOTIFY"}]}
+
+
 def _state_sections():
     st = stats()
     try:
@@ -928,15 +1302,21 @@ def _state_sections():
     # Never block the stream on a calendar fetch: calendar_loop() warms it.
     cal = _cal_cache["data"] if _cal_cache["data"] is not None else {
         "status": "loading", "none": False}
+    wx = _WX_CACHE["data"] if _WX_CACHE["data"] is not None else {
+        "status": "loading"}
     ev = events_since(0)
+    pc = _state_pc(st)
+    svc = _state_svc(st)
     return {
-        "pc": _state_pc(st),
-        "svc": _state_svc(st),
+        "pc": pc,
+        "svc": svc,
         "sp": sp,
         "ly": ly,
         "cal": cal,
         "ev": {"last": ev.get("last"),
                "events": (ev.get("events") or [])[-10:]},
+        "wx": wx,
+        "ui": _state_ui(pc, svc, wx, cal, ev),
     }
 
 
@@ -950,6 +1330,9 @@ def _state_sig(name, val, now):
     elif name == "cal":
         v = dict(val)
         v.pop("in", None)          # countdown is computed from start + ts
+    elif name == "wx":
+        v = dict(val)
+        v.pop("at", None)          # refresh time is not part of the forecast
     elif name == "ly":
         v = dict(val)
         v.pop("at", None)          # progress is not part of the line
@@ -966,7 +1349,7 @@ def _state_sig(name, val, now):
     return json.dumps(v, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def state_delta(known=None):
+def state_delta(known=None, only=None):
     """Sections whose revision differs from what the client already has."""
     now = time.time()
     sections = _state_snapshot()
@@ -978,12 +1361,26 @@ def state_delta(known=None):
                 _STATE_SIG[name] = sig
                 _STATE_REV[name] = _STATE_REV.get(name, 0) + 1
             revs[name] = _STATE_REV[name]
-    out = {"ts": int(now), "rev": revs}
+    wanted = set(only) if only else None
+    out = {"ts": int(now), "rev": {}}
     known = known or {}
     for name, val in sections.items():
+        if wanted is not None and name not in wanted:
+            continue
+        out["rev"][name] = revs[name]
         if str(known.get(name)) != str(revs[name]):
             out[name] = val
     return out
+
+
+def _only_from_query(q):
+    """?only=ui,sp,ly,ev -> the sections this display actually renders."""
+    raw = (q.get("only") or [""])[0].strip()
+    if not raw:
+        return None
+    keep = [x.strip() for x in raw.split(",")
+            if x.strip() in _STATE_KEYS]
+    return keep or None
 
 
 def _state_snapshot():
@@ -1080,8 +1477,9 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
         q = parse_qs(urlparse(self.path).query)
+        only = _only_from_query(q)
         known = {}
-        for name in _STATE_KEYS:
+        for name in (only or _STATE_KEYS):
             rev = (q.get("r_" + name) or [""])[0]
             if rev:
                 known[name] = rev
@@ -1089,7 +1487,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.wfile.flush()
             while True:
-                delta = state_delta(known)
+                delta = state_delta(known, only)
                 revs = delta.get("rev") or {}
                 now = time.time()
                 changed = any(str(known.get(k)) != str(v)
@@ -1123,12 +1521,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(body, "application/json")
         elif path in ("/state", "/state/"):
             q = parse_qs(urlparse(self.path).query)
+            only = _only_from_query(q)
             known = {}
-            for name in _STATE_KEYS:
+            for name in (only or _STATE_KEYS):
                 rev = (q.get("r_" + name) or [""])[0]
                 if rev:
                     known[name] = rev
-            body = json.dumps(state_delta(known), default=str).encode()
+            body = json.dumps(state_delta(known, only),
+                              default=str).encode()
             self._send(body, "application/json")
         elif path in ("/stream", "/stream/"):
             self._stream()
@@ -1334,6 +1734,7 @@ def main():
     threading.Thread(target=refresh_loop, daemon=True).start()
     threading.Thread(target=discovery_loop, daemon=True).start()
     threading.Thread(target=calendar_loop, daemon=True).start()
+    threading.Thread(target=weather_loop, daemon=True).start()
     threading.Thread(target=state_refresh_loop, daemon=True).start()
     spotify_bridge.start()
     try:

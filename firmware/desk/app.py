@@ -49,7 +49,8 @@ class App(AppDraw, AppLoop):
 
         self.face = {"breath": 0, "dev": 0, "tm": 0, "st": 0, "open": 3000}
         self.rst = {"state": "idle", "msg": "", "at": 0, "sent": 0,
-                    "dots": 0}
+                    "dots": 0, "check_at": 0, "checks": 0, "good": 0,
+                    "prog": -1, "song": ""}
         self.bright = self.light.value
 
         self.down = False

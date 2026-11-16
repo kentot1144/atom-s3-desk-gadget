@@ -32,13 +32,15 @@ small Python hub that runs on a PC in the same LAN.
   track data refreshes at 5 fps. Only the text band and the progress area are
   repainted, so the screen does not flash.
 - **Synced lyrics**: hold the button for ~1 s on the Spotify screen to overlay
-  the current and next lyric line, fetched from [LRCLIB](https://lrclib.net/)
-  through the hub. English lines word-wrap into up to four small static rows so
-  the whole line is visible without scrolling. CJK or very long lines split in
-  half and scroll together, and the speed adapts to the time left before the
-  next line so the line finishes in its slot.
+  a teleprompter of the current line plus the two coming lines, fetched from
+  [LRCLIB](https://lrclib.net/) through the hub. Lyrics use a smaller CJK font
+  so the whole band is visible; a line wider than the panel wraps into up to
+  three rows (Latin words kept whole, CJK split per character), and the block
+  slides up by the rows the finished line used.
 - **Remote Spotify restart**: a Normal-mode page that kills and relaunches the
   Spotify desktop app on the hub PC, for when it hangs and needs an Alt+F4.
+  Ten seconds after the request the device polls playback for six seconds and
+  reports SYNCED, or NOT SYNCED when the song is not actually moving.
 - **Several remembered Wi-Fi networks**: list every SSID/password pair you use
   and the device tries them in turn until one connects.
 
@@ -270,8 +272,9 @@ Two backends are supported, chosen automatically:
 If the SpotAPI call fails, the hub falls back to SMTC and retries SpotAPI a few
 minutes later. Lyrics come from the free [LRCLIB](https://lrclib.net/) API,
 cached per track, with a duration-matched search fallback for localized names.
-The hub owns the authoritative playback position and publishes the current and
-next line in the `ly` section. `/lyrics?pos=<ms>` remains for compatibility.
+The hub owns the authoritative playback position and publishes the current line
+and the two coming lines in the `ly` section. `/lyrics?pos=<ms>` remains for
+compatibility.
 
 ## Device state stream
 
@@ -284,10 +287,10 @@ seven sections, each with its own revision:
 | `pc` | CPU, memory, GPU, uptime, host |
 | `svc` | service checks, alert ids, player list, per-service uptime |
 | `sp` | Spotify status, track, device and progress anchor |
-| `ly` | current and next lyric line |
+| `ly` | current lyric line and the two coming lines |
 | `cal` | next calendar event |
 | `ev` | last event id and the latest 10 events |
-| `wx` | current conditions and today's min/max from open-meteo |
+| `wx` | current conditions and today's min/max (open-meteo, wttr.in fallback) |
 
 The device makes no outbound internet requests while it can reach the hub:
 weather, calendar, time, Spotify and notifications all arrive inside the
