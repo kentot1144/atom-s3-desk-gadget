@@ -40,7 +40,8 @@ small Python hub that runs on a PC in the same LAN.
   (Latin words kept whole, CJK split per character); three rows are drawn at
   0.8 scale, and when a line plus its preview needs a fourth row the block
   drops to 0.6 scale so all four fit. The block slides up by the rows the
-  finished line used.
+  finished line used. A line that still needs more than four rows is paged
+  through over time, so the tail is shown instead of being cut off.
 - **Remote Spotify restart**: a Normal-mode page that kills and relaunches the
   Spotify desktop app on the hub PC, for when it hangs and needs an Alt+F4.
   Ten seconds after the request the device polls playback for six seconds and

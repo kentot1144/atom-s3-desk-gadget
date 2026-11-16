@@ -3,7 +3,8 @@
 Lyrics behave like a small teleprompter.  The line being sung is on top and the
 coming lines are below; a line that is wider than the panel is wrapped into
 extra rows instead of scrolling sideways, and when the line changes the block
-slides up by however many rows the finished line used.
+slides up by however many rows the finished line used.  A line that needs more
+than four rows is paged through over time so no row is cut off.
 """
 import time
 
@@ -61,7 +62,13 @@ class Spot(SpotDraw):
         self.w_next = ()
         self.w_n2 = ()
         self.disp = ()              # the rows on screen, top to bottom
-        self.cur_rows = 1           # rows the line being sung occupies
+        self.cur_rows = 1           # rows of the sung line on this page
+        self.line_rows = 0          # total rows of the sung line
+        self.line_pages = 1         # pages needed for the sung line
+        self.line_page = 0          # page currently drawn
+        self.page_line = ""         # line the page index belongs to
+        self.page_ms = self.PAGE_MS
+        self.page_at = 0
         self.txt = self.TXT         # chosen lyric scale for the current line
         self.slot_h = self.SLOT_H   # matching row pitch
         self.slide = 0              # px the lyric block has slid up
@@ -80,6 +87,9 @@ class Spot(SpotDraw):
         self.lyr_key = None
         self.buf = ("", "", "")
         self.line = ""
+        self.line_page = 0
+        self.page_line = ""
+        self.page_at = time.ticks_ms()
         self._build_disp()
         self.slide = 0
         self.armed_for = None
@@ -92,6 +102,9 @@ class Spot(SpotDraw):
         self.lyr_key = None
         self.buf = ("", "", "")
         self.line = ""
+        self.line_page = 0
+        self.page_line = ""
+        self.page_at = time.ticks_ms()
         self._build_disp()
         self.slide = 0
         self.armed_for = None
@@ -244,8 +257,8 @@ class Spot(SpotDraw):
         if not self.buf[1]:
             return False
         self._build_disp()
-        # A long line can use two to four rows; the block moves by all of them
-        # so the next line lands at the top.
+        # The page on screen can use up to four rows; the block moves by all
+        # of them so the next line lands at the top.
         self.slide_px = min(self.MAX_ROWS, self.cur_rows) * self.slot_h
         self.slide = 1
         self.slide_at = now
@@ -263,6 +276,7 @@ class Spot(SpotDraw):
 
     def _plan_lyrics(self, now):
         self._build_disp()
+        self.page_at = now
         self.long = False
         self.max_off = 0
         self.pos = 0
@@ -275,7 +289,7 @@ class Spot(SpotDraw):
     def _wrap(self, s, limit=None, size=None):
         """Rows for one lyric line, measured at the scale that will draw it."""
         if limit is None:
-            limit = self.MAX_ROWS
+            limit = self.MAX_WRAP
         if size is None:
             size = getattr(self, "txt", self.TXT)
         s = (s or "").strip()
@@ -320,19 +334,59 @@ class Spot(SpotDraw):
         return tuple(rows[:limit])
 
     def _build_disp(self):
-        # Wrap at the normal scale first.  If that line plus one preview row
-        # would need a fourth row, shrink the whole block so four rows fit.
-        base = self._wrap(self.buf[0], self.MAX_ROWS, self.TXT)
+        # Wrap the whole line at the normal scale first.  If that line plus
+        # one preview row would need a fourth row, shrink the block so four
+        # rows fit.  A line that is still longer than four rows keeps every
+        # row and is paged over time instead of being clipped.
+        base = self._wrap(self.buf[0], self.MAX_WRAP, self.TXT)
         need = len(base) + (1 if (self.buf[1] or "").strip() else 0)
         if need > 3:
             self.txt, self.slot_h = self.TXT_SM, self.SLOT_H_SM
         else:
             self.txt, self.slot_h = self.TXT, self.SLOT_H
-        self.w_cur = self._wrap(self.buf[0], self.MAX_ROWS, self.txt)
-        self.w_next = self._wrap(self.buf[1], self.MAX_ROWS, self.txt)
-        self.w_n2 = self._wrap(self.buf[2], self.MAX_ROWS, self.txt)
-        self.disp = self.w_cur + self.w_next + self.w_n2
-        self.cur_rows = len(self.w_cur) or 1
+        self.w_cur = self._wrap(self.buf[0], self.MAX_WRAP, self.txt)
+        self.w_next = self._wrap(self.buf[1], self.MAX_WRAP, self.txt)
+        self.w_n2 = self._wrap(self.buf[2], self.MAX_WRAP, self.txt)
+        self.line_rows = len(self.w_cur)
+        pages = (self.line_rows + self.MAX_ROWS - 1) // self.MAX_ROWS
+        pages = pages or 1
+        # A different sung line starts on page 0; re-reading the same line
+        # must keep the page that is already on screen.
+        if self.page_line != self.buf[0]:
+            self.page_line = self.buf[0]
+            self.line_page = 0
+        elif self.line_page >= pages:
+            self.line_page = pages - 1
+        self.line_pages = pages
+        start = self.line_page * self.MAX_ROWS
+        rows = self.w_cur[start:start + self.MAX_ROWS]
+        disp = list(rows)
+        # Only the last page leaves room for the coming lines.  A page of the
+        # line being sung always fits completely above the progress strip.
+        if self.line_page == pages - 1:
+            room = self.MAX_ROWS - len(disp)
+            if room > 0:
+                disp += self.w_next[:room]
+                room = self.MAX_ROWS - len(disp)
+            if room > 0:
+                disp += self.w_n2[:room]
+        self.disp = tuple(disp)
+        self.cur_rows = len(rows) or 1
+        self._page_ms()
+
+    def _page_ms(self):
+        """How long to hold one page: spread it over the line's duration."""
+        ms = self.PAGE_MS
+        if self.line_pages > 1:
+            ly = self.app.hub.ly or {}
+            try:
+                span = int(ly.get("next_at")) - int(ly.get("line_at"))
+            except Exception:
+                span = 0
+            if span > 0:
+                ms = span // self.line_pages
+        self.page_ms = max(self.PAGE_MIN_MS,
+                           min(self.PAGE_MAX_MS, int(ms)))
 
     def _plan(self, d):
         self.max_off = 0
@@ -354,6 +408,16 @@ class Spot(SpotDraw):
             self._sync_tick(now)
 
         redraw = self.refresh(now)
+
+        # An extra-long line is paged through so no row is cut off.
+        if (self.lyrics and not self.slide and self.line_pages > 1
+                and self.line_page < self.line_pages - 1
+                and time.ticks_diff(now, self.page_at) >= self.page_ms):
+            self.line_page += 1
+            self.page_at = now
+            self._build_disp()
+            self.dirty_lines = True
+            redraw = True
 
         # Start the slide a moment before the next line so it lands on time
         # instead of reacting to a hub update that arrives late.

@@ -361,6 +361,64 @@ def main():
         failures += 1
         print("FAIL spotify   four-row draw %r" % e)
 
+    # a line longer than four rows pages through every row instead of clipping
+    huge = (long_lines[0] + " and it keeps going with even more words to "
+            "force a fifth and a sixth row onto the little display")
+    app.spot.buf = (huge, "after it", "")
+    app.spot.page_line = ""
+    app.spot.line_page = 0
+    app.spot._build_disp()
+    total = len(app.spot._wrap(huge, app.spot.MAX_WRAP, app.spot.txt))
+    print("ok   spotify   page rows=%d pages=%d shown=%d"
+          % (app.spot.line_rows, app.spot.line_pages, len(app.spot.disp)))
+    if app.spot.line_rows <= app.spot.MAX_ROWS:
+        failures += 1
+        print("FAIL page      fixture did not exceed four rows")
+    if app.spot.line_rows != total or app.spot.line_pages < 2:
+        failures += 1
+        print("FAIL page      long line was not paged")
+    if (len(app.spot.disp) > app.spot.MAX_ROWS
+            or app.spot.cur_rows > app.spot.MAX_ROWS):
+        failures += 1
+        print("FAIL page      a page is taller than the band")
+    seen_rows = []
+    for pi in range(app.spot.line_pages):
+        app.spot.line_page = pi
+        app.spot._build_disp()
+        page_rows = min(app.spot.MAX_ROWS,
+                        app.spot.line_rows - pi * app.spot.MAX_ROWS)
+        seen_rows += list(app.spot.disp[:page_rows])
+        if len(app.spot.disp) > app.spot.MAX_ROWS:
+            failures += 1
+            print("FAIL page      page %d has %d rows"
+                  % (pi, len(app.spot.disp)))
+    if tuple(seen_rows) != app.spot.w_cur:
+        failures += 1
+        print("FAIL page      only %d of %d rows are reachable"
+              % (len(seen_rows), app.spot.line_rows))
+
+    # the page advances on its own while the same line is still being sung
+    app.spot.buf = (huge, "after it", "")
+    app.spot.page_line = huge
+    app.spot.line_page = 0
+    app.spot._build_disp()
+    app.hub.ok_at = time.ticks_ms()
+    app.hub.sp = dict(base, is_playing=True)
+    app.hub.ly = {"status": "success", "line": huge, "next": "after it",
+                  "next2": "", "line_at": 0, "next_at": 60000}
+    app.spot.lyrics = True
+    app.spot.lyr_key = ("success", huge)
+    app.spot.sig = (base["song"], base["artist"], base["device"], True)
+    app.spot.sync_at = time.ticks_add(time.ticks_ms(), 100000)
+    app.spot.page_at = time.ticks_add(time.ticks_ms(), -10000)
+    app.spot.slide = 0
+    app.spot.tick(time.ticks_ms())
+    print("ok   spotify   page advanced=%d/%d"
+          % (app.spot.line_page + 1, app.spot.line_pages))
+    if app.spot.line_page < 1:
+        failures += 1
+        print("FAIL page      long line did not advance")
+
     # lyric slide-up: the block is drawn at every offset of the animation
     app.spot.buf = ("now the line", "the coming line", "the one after")
     app.spot.line = "now the line"

@@ -14,15 +14,20 @@ class SpotDraw:
 
     # Lyrics are a teleprompter.  Rows are usually 0.8 scale (19 px glyphs in
     # 21 px rows, three rows in the band).  When a line needs a fourth row the
-    # renderer drops to 0.6 (14 px glyphs in 15 px rows) so four rows fit.
+    # renderer drops to 0.6 (14 px glyphs in 15 px rows) so four rows fit.  A
+    # line that still needs more than four rows is paged through over time.
     SLOT_Y = 22
     SLOT_H = 21
     TXT = 0.8
     SLOT_H_SM = 15
     TXT_SM = 0.6
     MAX_ROWS = 4
+    MAX_WRAP = 40            # safety cap; a long line pages instead of clipping
     SLIDE_MS = 260
     SYNC_MS = 4000           # direct lyric alignment with live Spotify position
+    PAGE_MS = 2400           # hold one page of an extra-long line
+    PAGE_MIN_MS = 1400
+    PAGE_MAX_MS = 3000
 
     def _scroll(self, s, f, y, c, center=True):
         w = tw(s, f)
