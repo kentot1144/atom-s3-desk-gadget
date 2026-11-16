@@ -244,6 +244,10 @@ def main():
                 app.spot.draw()
                 print("ok   spotify   %-14s %3d draws"
                       % ("%s lyrics=%d" % (label, lyrics), len(DRAWS)))
+                if lyrics and LCD.size != 1.0:
+                    failures += 1
+                    print("FAIL spotify   lyric size leaked: %s"
+                          % LCD.size)
             except Exception as e:
                 failures += 1
                 print("FAIL spotify   %-14s %r"
@@ -266,6 +270,9 @@ def main():
             app.spot.draw()
             print("ok   spotify   long lyric rows=%d %3d draws"
                   % (len(rows), len(DRAWS)))
+            if LCD.size != 1.0:
+                failures += 1
+                print("FAIL spotify   lyric size leaked: %s" % LCD.size)
         except Exception as e:
             failures += 1
             print("FAIL spotify   long lyric %r" % e)
@@ -307,6 +314,9 @@ def main():
             app.spot.draw()
             print("ok   spotify   %-14s %3d draws"
                   % ("slide px=%d" % off, len(DRAWS)))
+            if LCD.size != 1.0:
+                failures += 1
+                print("FAIL spotify   lyric size leaked: %s" % LCD.size)
         except Exception as e:
             failures += 1
             print("FAIL spotify   slide px=%d %r" % (off, e))

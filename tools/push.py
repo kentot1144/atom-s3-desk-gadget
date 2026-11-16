@@ -221,6 +221,10 @@ def main():
             # Leave the firmware running.  Interrupting here used to leave the
             # gadget dead at the REPL, so the first frame after a flash showed
             # an old screen and the hub looked unreachable.
+            # Ctrl-B leaves the raw REPL first; Ctrl-D then soft-resets from
+            # the friendly REPL and runs main.py.
+            s.write(b"\x02")
+            time.sleep(0.3)
             s.write(b"\x04")
             time.sleep(1.0)
             end = time.time() + 1.0

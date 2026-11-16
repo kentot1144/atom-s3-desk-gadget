@@ -114,13 +114,21 @@ class SpotDraw:
             ctext("...", F_JA, 34, LINE)
             return
         rows = getattr(self, "cur_rows", 1)
-        for k in range(6):
-            yy = self.SLOT_Y - self.slide + k * self.SLOT_H
-            if yy > self.PROG_Y:
-                break
-            if k < len(disp) and yy + self.SLOT_H > self.BAND_Y:
-                # Rows of the line being sung are bright; the rest are hints.
-                self._lyric_row(disp[k], yy, WHITE if k < rows else MUTED)
+        try:
+            for k in range(6):
+                yy = self.SLOT_Y - self.slide + k * self.SLOT_H
+                if yy > self.PROG_Y:
+                    break
+                if k < len(disp) and yy + self.SLOT_H > self.BAND_Y:
+                    # Rows of the line being sung are bright; the rest are hints.
+                    self._lyric_row(disp[k], yy, WHITE if k < rows else MUTED)
+        finally:
+            # Only lyrics are small: restore the scale for the header,
+            # progress text and every page drawn after this one.
+            try:
+                LCD.setTextSize(1)
+            except Exception:
+                pass
 
     def _lyric_row(self, s, y, c):
         # Font first, then the size: setFont can reset the scale on some
