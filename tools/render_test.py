@@ -213,6 +213,20 @@ def main():
             failures += 1
             print("FAIL %-9s %r" % (name, e))
 
+    # a leftover lyric scale must never shrink normal page text
+    LCD.setTextSize(0.8)
+    app.idx = 0
+    try:
+        app.draw(pages[0])
+        print("ok   scale     reset to %s" % LCD.size)
+        if LCD.size != 1.0:
+            failures += 1
+            print("FAIL scale     normal page kept size %s" % LCD.size)
+    except Exception as e:
+        failures += 1
+        print("FAIL scale     %r" % (e,))
+    LCD.setTextSize(1)
+
     for kind in ("mc_join", "mc_leave", "mc_move", "other"):
         app.banner = {"kind": kind, "ts": int(time.time()),
                       "title": "A fairly long notice title here",

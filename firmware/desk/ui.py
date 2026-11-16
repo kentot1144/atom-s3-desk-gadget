@@ -49,6 +49,11 @@ def pc(ci, default=WHITE):
 # ------------------------------------------------------------------ drawing
 def tl(s, f, x, y, c=WHITE, bg=BLACK):
     LCD.setFont(f)
+    try:
+        # Normal text is always full size; only the lyric rows set a scale.
+        LCD.setTextSize(1)
+    except Exception:
+        pass
     LCD.setTextColor(c, bg)
     LCD.setCursor(int(x), int(y))
     LCD.print(s)
@@ -56,6 +61,10 @@ def tl(s, f, x, y, c=WHITE, bg=BLACK):
 
 def t1(s, f, x, y, c=WHITE, bg=BLACK):
     LCD.setFont(f)
+    try:
+        LCD.setTextSize(1)
+    except Exception:
+        pass
     LCD.setTextColor(c, bg)
     LCD.drawString(s, int(x), int(y))
 
