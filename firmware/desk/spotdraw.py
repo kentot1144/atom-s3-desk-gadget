@@ -160,7 +160,7 @@ class SpotDraw:
         dur = int(d.get("duration_ms") or 0)
         pos = self._pos()
         pct = (pos * 100 // dur) if dur else 0
-        bar(6, 85, 116, 5, pct, GREEN if playing else LINE)
+        bar(6, 85, 116, 5, pct, GREEN if playing else AMBER)
         tl(mmss(pos), F_TINY, 6, 92, MUTED)
         rtext(mmss(dur), F_TINY, 122, 92, MUTED)
         ctext("PLAYING" if playing else "PAUSED", F_TINY, 104,
