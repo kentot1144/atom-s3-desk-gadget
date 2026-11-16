@@ -140,7 +140,7 @@ needed immediately.
 
    ```bat
    python tools\wifi_import.py
-   python tools\wifi_import.py --home aterm-519347-5p
+   python tools\wifi_import.py --home YOUR_HOME_SSID
    ```
 
    The hub can also be found automatically. Add its MAC address to pin the

@@ -5,7 +5,7 @@ should be in there.  Existing entries and their order are kept (the first one
 is the home network); only missing SSIDs are appended.
 
     python tools/wifi_import.py
-    python tools/wifi_import.py --home aterm-519347-5p
+    python tools/wifi_import.py --home YOUR_HOME_SSID
     python tools/wifi_import.py --dry-run
 
 config.json contains passwords, so it stays local and is never committed.
