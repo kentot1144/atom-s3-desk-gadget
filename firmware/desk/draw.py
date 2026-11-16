@@ -45,34 +45,65 @@ class AppDraw:
         ctext(p.get("cond", ""), F_MD, 84, ACCENT)
         ctext(p.get("sub", ""), F_SM, 106, MUTED)
 
-    def draw_rows(self, p):
-        LCD.fillScreen(BLACK)
-        self._head(p)
-        y = 28
-        for r in p.get("rows") or []:
-            if r.get("d") is not None:
-                LCD.fillRect(5, y + 3, 5, 5, pc(r["d"], GREEN))
-                x = 14
+    # Rows pages: four entries fit, and an "auto" page with more entries is
+    # split into sub-pages that the app loop advances on a timer.
+    ROWS_PER = 4
+    ROW_Y0 = 28
+    ROW_PITCH = 22
+
+    def _row(self, r, y):
+        if r.get("d") is not None:
+            LCD.fillRect(5, y + 3, 5, 5, pc(r["d"], GREEN))
+            x = 14
+        else:
+            x = 4
+        tl(r.get("l", ""), F_SM, x, y, pc(r.get("c")))
+        v = r.get("v") or ""
+        if v:
+            if r.get("deg"):
+                rtemp(v, F_SM, 124, y, pc(r.get("vc"), ORANGE))
+            elif len(v) > 5:
+                rtext(v, F_TINY, 123, y + 2, pc(r.get("vc")))
             else:
-                x = 4
-            tl(r.get("l", ""), F_SM, x, y, pc(r.get("c")))
-            v = r.get("v") or ""
-            if v:
-                if r.get("deg"):
-                    rtemp(v, F_SM, 124, y, pc(r.get("vc"), ORANGE))
-                elif len(v) > 5:
-                    rtext(v, F_TINY, 123, y + 2, pc(r.get("vc")))
-                else:
-                    rtext(v, F_SM, 123, y, pc(r.get("vc")))
-            if r.get("p") is not None:
-                bar(34, y + 3, 56, 7, r["p"], pc(r.get("pc"), GREEN))
-            s = r.get("s")
-            if s:
-                tl(s, F_TINY, 14, y + 13, pc(r.get("sc"), MUTED))
-            y += 22
+                rtext(v, F_SM, 123, y, pc(r.get("vc")))
+        if r.get("p") is not None:
+            bar(34, y + 3, 56, 7, r["p"], pc(r.get("pc"), GREEN))
+        s = r.get("s")
+        if s:
+            tl(s, F_TINY, 14, y + 13, pc(r.get("sc"), MUTED))
+
+    def rows_pages(self, p):
+        n = len(p.get("rows") or [])
+        if not p.get("auto") or n <= self.ROWS_PER:
+            return 1
+        return (n + self.ROWS_PER - 1) // self.ROWS_PER
+
+    def draw_rows(self, p):
+        rows = p.get("rows") or []
+        npages = self.rows_pages(p)
+        i = (self.rs_page % npages) if npages > 1 else 0
+        LCD.fillScreen(BLACK)
+        if npages > 1:
+            chunk = rows[i * self.ROWS_PER:(i + 1) * self.ROWS_PER]
+        else:
+            chunk = rows
+        y = self.ROW_Y0
+        for r in chunk:
+            if y > 104:
+                break
+            self._row(r, y)
+            y += self.ROW_PITCH
+        if npages > 1:
+            # The page ring already shows SERVERS as one page, so the
+            # sub-page counter belongs in the title.
+            header("%s %d/%d" % (p.get("t") or "ROWS", i + 1, npages),
+                   self.idx, len(self.page_list()),
+                   pc(p.get("hc")) if p.get("hc") is not None else ACCENT)
+            dots(len(self.page_list()), self.idx)
+        else:
+            self._head(p)
         if p.get("foot"):
             ctext(p["foot"], F_TINY, 107, pc(p.get("fc"), MUTED))
-        dots(len(self.page_list()), self.idx)
 
     def draw_msg(self, p):
         LCD.fillScreen(BLACK)

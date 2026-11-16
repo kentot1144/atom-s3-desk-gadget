@@ -124,10 +124,17 @@ STATE = {
                 {"l": "MEM", "v": "76%", "p": 76, "pc": 9, "vc": 4},
                 {"l": "GPU", "v": "--", "vc": 3}],
              "foot": "UPTIME 15d 14h 2m"},
-            {"k": "rows", "t": "SERVERS 1/1", "hc": 8, "rows": [
-                {"l": "hub", "v": "UP", "d": 8, "vc": 8},
-                {"l": "ssh", "v": "DOWN", "d": 12, "vc": 12,
-                 "s": "since 12m"}], "foot": "3 CHECKS"},
+            {"k": "rows", "t": "SERVERS", "hc": 8, "auto": 1, "rows": [
+                {"l": "MAIN", "v": "UP 40ms", "vc": 8},
+                {"l": "VNC", "v": "UP 120ms", "vc": 8},
+                {"l": "VNC SUB", "v": "UP 90ms", "vc": 8},
+                {"l": "CRAFTY", "v": "UP 210ms", "vc": 9},
+                {"l": "PROXY", "v": "UP 60ms", "vc": 8},
+                {"l": "VELOCITY", "v": "4/20", "vc": 8},
+                {"l": "MC HUB", "v": "0/10", "vc": 8},
+                {"l": "SMP", "v": "2/30", "vc": 8},
+                {"l": "LIMBO", "v": "DOWN", "vc": 12,
+                 "s": "30000"}], "foot": "8/9 UP", "fc": 9},
             {"k": "notice", "t": "NOTICES", "rows": [
                 {"l": "build finished", "s": "12m ago", "d": 8},
                 {"l": "disk almost full", "s": "1h ago", "d": 12}],
@@ -148,6 +155,7 @@ STATE = {
     "ly": {"status": "success", "synced": True,
            "line": "Meomchun sigan sok jamdeun neoreul chajaga",
            "next": "Amuri magado gyeolguk neoui gyeotin geol",
+           "next2": "Iksukan gireul ttara geotdaga bomyeon",
            "line_at": 520, "next_at": 4920},
 }
 
@@ -241,10 +249,11 @@ def main():
     for line in ("This is an extremely long lyric line that cannot possibly "
                  "fit on a 128 pixel wide display in one row",
                  "これは日本語のとても長い歌詞の行で、128ピクセルの画面には収まりません"):
+        app.spot.buf = (line, "the line after it", "and one more after that")
         app.spot.line = line
-        app.spot.rows = []
         app.spot._plan_lyrics(time.ticks_ms())
         app.spot.dirty_full = True
+        del DRAWS[:]
         try:
             app.spot.draw()
             print("ok   spotify   %-14s %3d draws"
@@ -252,6 +261,61 @@ def main():
         except Exception as e:
             failures += 1
             print("FAIL spotify   long lyric %r" % e)
+
+    # lyric slide-up: the block is drawn at every offset of the animation
+    app.spot.buf = ("now the line", "the coming line", "the one after")
+    app.spot.line = "now the line"
+    app.spot.lyrics = True
+    app.spot._plan_lyrics(time.ticks_ms())
+    for off in (0, 6, 13, 20, 26):
+        app.spot.slide = off
+        app.spot.dirty_full = True
+        del DRAWS[:]
+        try:
+            app.spot.draw()
+            print("ok   spotify   %-14s %3d draws"
+                  % ("slide px=%d" % off, len(DRAWS)))
+        except Exception as e:
+            failures += 1
+            print("FAIL spotify   slide px=%d %r" % (off, e))
+    app.spot.slide = 0
+
+    # rows sub-pages: each page draws, and the timer advances then wraps
+    auto = None
+    for page in pages:
+        if page.get("k") == "rows" and page.get("auto"):
+            auto = page
+            app.idx = pages.index(page)
+            break
+    if auto is None:
+        failures += 1
+        print("FAIL rows      no auto page in state")
+    else:
+        npages = app.rows_pages(auto)
+        for pi in range(npages):
+            app.rs_page = pi
+            del DRAWS[:]
+            try:
+                app.draw_rows(auto)
+                print("ok   rows      %-14s %3d draws"
+                      % ("sub %d/%d" % (pi + 1, npages), len(DRAWS)))
+            except Exception as e:
+                failures += 1
+                print("FAIL rows      sub %d/%d %r" % (pi + 1, npages, e))
+        app.rs_page = 0
+        app.rs_at = time.ticks_ms()
+        tick = time.ticks_ms()
+        seen = []
+        for _ in range(npages * 2):
+            tick += 3700
+            if app.rows_tick(tick, npages):
+                seen.append(app.rs_page)
+        print("ok   rows_tick npages=%d seen=%s end=%d"
+              % (npages, seen, app.rs_page))
+        if seen[:npages] != [((i + 1) % npages) for i in range(npages)] \
+                or app.rs_page != 0:
+            failures += 1
+            print("FAIL rows_tick expected 1..%d then wrap" % npages)
 
     print("FAILURES:", failures)
     return 1 if failures else 0

@@ -3,7 +3,7 @@ import M5
 import gc
 import math
 import time
-from desk.const import CLICK_GAP_MS, HOLD_MS, HUB_POLL_LIVE_MS, HUB_POLL_MS, NOTIF_MAX_AGE_S, NOTIF_SHOW_MS, NTP_FALLBACK_MS, SOFT_HOLD_MS
+from desk.const import CLICK_GAP_MS, HOLD_MS, HUB_POLL_LIVE_MS, HUB_POLL_MS, NOTIF_MAX_AGE_S, NOTIF_SHOW_MS, NTP_FALLBACK_MS, ROWS_PAGE_MS, SOFT_HOLD_MS
 from desk.ui import AMBER, GREEN, RED, splash, splash_line
 
 
@@ -58,6 +58,17 @@ class AppLoop:
             self.clk_sec = -1
             self.status_at = 0
             self.dirty = True
+
+    # -- auto-advancing rows -----------------------------------------
+    def rows_tick(self, now, npages):
+        """Advance the rows sub-page.  True when the page needs a redraw."""
+        if npages < 2:
+            return False
+        if time.ticks_diff(now, self.rs_at) < ROWS_PAGE_MS:
+            return False
+        self.rs_at = now
+        self.rs_page = (self.rs_page + 1) % npages
+        return True
 
     # -- buttons -----------------------------------------------------
     def buttons(self, now):
@@ -289,6 +300,15 @@ class AppLoop:
                 if self.dirty:
                     try:
                         self.draw_restart(p)
+                    except Exception as e:
+                        print("draw", e)
+                    self.dirty = False
+            elif kind == "rows":
+                if self.rows_tick(now, self.rows_pages(p)):
+                    self.dirty = True
+                if self.dirty:
+                    try:
+                        self.draw_rows(p)
                     except Exception as e:
                         print("draw", e)
                     self.dirty = False

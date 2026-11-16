@@ -18,3 +18,6 @@ SOFT_HOLD_MS = 1000
 CLICK_GAP_MS = 400
 NOTIF_SHOW_MS = 9000
 NOTIF_MAX_AGE_S = 300
+
+# Auto-advancing rows page (servers): one sub-page at a time, then wrap.
+ROWS_PAGE_MS = 3600

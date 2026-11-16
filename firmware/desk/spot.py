@@ -1,7 +1,15 @@
-"""Spotify page state machine: scrolling, lyric sync and timing."""
+"""Spotify page state machine: horizontal scroll, lyric slide-up and timing.
+
+Lyrics behave like a small teleprompter: the current line sits at the top,
+the coming lines sit below it, and when the next line starts the whole block
+slides up by one row.  Long lines still ping-pong sideways, but only inside
+their own row.
+"""
 import time
-from desk.ui import F_JA, F_SM, F_TINY, W, tw
+
+from desk.ui import F_JA, F_TINY, W, tw
 from desk.spotdraw import SpotDraw
+
 
 class Spot(SpotDraw):
     def __init__(self, app):
@@ -19,15 +27,13 @@ class Spot(SpotDraw):
         self.dirty_prog = False
         self.animating = False
         self.lyrics = False
-        self.lyr_key = None
-        self.line = ""
-        self.rows = []
-        self.row_y = 22
-        self.row_dy = 25
-        self.next_y = 73
-        self.lyr_font = F_JA
-        self.lyr_scroll = False
         self.sig = None
+        self.lyr_key = None
+        self.buf = ("", "", "")     # current line, next line, next-next line
+        self.line = ""
+        self.slide = 0              # px the lyric block has slid up
+        self.slide_at = 0
+        self.armed_for = None       # next_at value already animated for
 
     def enter(self):
         self.sig = None
@@ -36,12 +42,19 @@ class Spot(SpotDraw):
         self.dirty_full = True
         self.frame_at = time.ticks_ms()
         self.hold_until = time.ticks_add(time.ticks_ms(), self.HOLD_MS)
+        self.lyr_key = None
+        self.buf = ("", "", "")
+        self.line = ""
+        self.slide = 0
+        self.armed_for = None
 
     def soft_hold(self):
         self.lyrics = not self.lyrics
         self.lyr_key = None
-        self.rows = []
+        self.buf = ("", "", "")
         self.line = ""
+        self.slide = 0
+        self.armed_for = None
         self.long = False
         self.pos = 0
         self.dir = 1
@@ -73,6 +86,12 @@ class Spot(SpotDraw):
             self.dir = 1
             self.frame_at = now
             self.hold_until = time.ticks_add(now, self.HOLD_MS)
+            # a different track: drop the lyric block so it cuts, not slides
+            self.lyr_key = None
+            self.buf = ("", "", "")
+            self.line = ""
+            self.slide = 0
+            self.armed_for = None
             self._plan(sp)
             self.dirty_full = True
         elif time.ticks_diff(now, self.prog_at) > 250:
@@ -84,96 +103,93 @@ class Spot(SpotDraw):
 
     def _fail(self, msg):
         msg = (msg or "HUB OFFLINE")[:22]
-        if self.sig != msg or not self.rows:
+        if self.sig != msg or not self.buf[0]:
             self.sig = msg
-            self.rows = []
+            self.buf = ("", "", "")
             self.long = False
             self.animating = False
+            self.slide = 0
             self.dirty_full = True
 
+    # -- lyrics ------------------------------------------------------
     def _sync_lyrics(self, now):
         ly = self.app.hub.ly
         if not ly:
             return
-        line = ""
-        if ly.get("status") == "success":
-            line = ly.get("line") or ""
-        key = (ly.get("status"), line)
-        if key != self.lyr_key:
-            self.lyr_key = key
-            self.line = line
-            self._plan_lyrics(now)
-            self.dirty_lines = True
-        elif self.long:
-            self.dirty_lines = True
+        st = ly.get("status")
+        if st != "success":
+            key = (st, "")
+            if key != self.lyr_key:
+                self.lyr_key = key
+                self.buf = ("", "", "")
+                self.line = ""
+                self.long = False
+                self.slide = 0
+                self.dirty_full = True
+            return
+        line = (ly.get("line") or "").strip()
+        new = (line, (ly.get("next") or "").strip(),
+               (ly.get("next2") or "").strip())
+        key = ("success", line)
+        if key == self.lyr_key:
+            # Same sung line; still take a fresher lookahead so the row that
+            # enters from below is already filled in.
+            if (not self.slide and new[1] == self.buf[1]
+                    and new[2] and new[2] != self.buf[2]):
+                self.buf = (self.buf[0], self.buf[1], new[2])
+                self.dirty_lines = True
+            return
+        self.lyr_key = key
+        cur = self.buf[0]
+        if self.slide:
+            # The animation is already running: the hub has caught up, so all
+            # that can change is the line entering from below.
+            if new[0] == self.buf[1]:
+                self.buf = (self.buf[0], self.buf[1], new[2])
+            return
+        if new[0] == cur:
+            # Same line, later payload (lookahead moved on).
+            self.buf = new
+            return
+        if new[0] == self.buf[1]:
+            # The hub is one line ahead of what we show: slide now.
+            self.buf = (self.buf[0], self.buf[1], new[2])
+            self._start_slide(now)
+            return
+        # A jump (seek, or non-synced lyrics): cut instead of animating.
+        self.buf = new
+        self.line = line
+        self.slide = 0
+        self.armed_for = None
+        self._plan_lyrics(now)
+        self.dirty_full = True
 
-    def _is_latin(self, s):
-        for ch in s:
-            if ord(ch) > 0x2E7F:
-                return False
+    def _start_slide(self, now):
+        if not self.buf[1]:
+            return False
+        self.slide = 1
+        self.slide_at = now
+        self.pos = 0
+        self.dir = 1
+        self.dirty_full = True
         return True
 
-    def _wrap(self, s, f, max_rows):
-        limit = W - 12
-        words = s.split()
-        if not words:
-            return None
-        rows = []
-        cur = ""
-        for word in words:
-            while tw(word, f) > limit:
-                lo, hi = 1, len(word)
-                while lo < hi:
-                    m = (lo + hi + 1) // 2
-                    if tw(word[:m], f) <= limit:
-                        lo = m
-                    else:
-                        hi = m - 1
-                if cur:
-                    rows.append(cur)
-                    cur = ""
-                rows.append(word[:lo])
-                word = word[lo:]
-                if len(rows) > max_rows:
-                    return None
-            if not word:
-                continue
-            cand = (cur + " " + word) if cur else word
-            if tw(cand, f) <= limit:
-                cur = cand
-            else:
-                if cur:
-                    rows.append(cur)
-                cur = word
-                if len(rows) >= max_rows and tw(cur, f) > limit:
-                    return None
-            if len(rows) > max_rows:
-                return None
-        if cur:
-            rows.append(cur)
-        if len(rows) > max_rows:
-            return None
-        return rows
+    def _land(self, now):
+        self.buf = (self.buf[1], self.buf[2], "")
+        self.line = self.buf[0]
+        self.slide = 0
+        self._plan_lyrics(now)
+        self.dirty_full = True
 
-    def _split_two(self, s, f):
-        total = tw(s, f)
-        if total <= W - 12:
-            return [s]
-        target = total // 2
-        lo, hi = 1, len(s) - 1
-        best = max(1, len(s) // 2)
-        while lo <= hi:
-            m = (lo + hi) // 2
-            if tw(s[:m], f) < target:
-                lo = m + 1
-            else:
-                best = m
-                hi = m - 1
-        p1 = s[:best].strip()
-        p2 = s[best:].strip()
-        if not p1:
-            return [s]
-        return [p1, p2] if p2 else [p1]
+    def _plan_lyrics(self, now):
+        s = (self.buf[0] or "").strip()
+        self.max_off = max(0, tw(s, F_JA) - (W - 12))
+        self.long = self.max_off > 0
+        self.pos = 0
+        self.dir = 1
+        self.frame_at = now
+        self.hold_until = time.ticks_add(now, self.LYRIC_HOLD_MS)
+        self.step = self._lyric_step()
 
     def _lyric_step(self):
         if not self.long:
@@ -192,63 +208,6 @@ class Spot(SpotDraw):
             step = self.LYRIC_STEP_MAX
         return step
 
-    def _plan_lyrics(self, now):
-        s = (self.line or "").strip()
-        limit = W - 12
-        rows = None
-        font = F_JA
-        dy = 25
-        y = 22
-        scroll = False
-        if not s:
-            rows = [""]
-            y = 33
-        elif tw(s, F_JA) <= limit:
-            rows = [s]
-            y = 33
-        elif self._is_latin(s):
-            rows = self._wrap(s, F_SM, 4)
-            if rows:
-                font = F_SM
-                dy = 13
-                y = 21
-            else:
-                rows = self._wrap(s, F_TINY, 4)
-                if rows:
-                    font = F_TINY
-                    dy = 12
-                    y = 20
-        if not rows:
-            rows = self._split_two(s, F_JA)
-            font = F_JA
-            dy = 25
-            y = 22
-            scroll = True
-        elif len(rows) == 1:
-            y = 33
-        self.rows = rows
-        self.lyr_font = font
-        self.lyr_scroll = scroll
-        self.row_y = y
-        self.row_dy = dy
-        if not scroll and len(rows) == 1:
-            self.next_y = 64
-        else:
-            self.next_y = min(74, max(64, y + dy * len(rows)))
-        w = 0
-        if scroll:
-            for row in rows:
-                rw = tw(row, font)
-                if rw > w:
-                    w = rw
-        self.max_off = max(0, w - limit)
-        self.long = self.max_off > 0
-        self.pos = 0
-        self.dir = 1
-        self.frame_at = now
-        self.hold_until = time.ticks_add(now, self.LYRIC_HOLD_MS)
-        self.step = self._lyric_step()
-
     def _plan(self, d):
         self.max_off = 0
         self.step = 1
@@ -265,6 +224,31 @@ class Spot(SpotDraw):
 
     def tick(self, now):
         redraw = self.refresh(now)
+
+        # Start the slide a moment before the next line so it lands on time
+        # instead of reacting to a hub update that arrives late.
+        if self.lyrics and not self.slide and self.buf[1]:
+            na = (self.app.hub.ly or {}).get("next_at")
+            if na and na != self.armed_for:
+                remain = int(na) - self._pos()
+                if 0 < remain <= self.SLIDE_MS:
+                    self.armed_for = na
+                    self._start_slide(now)
+
+        if self.slide:
+            el = time.ticks_diff(now, self.slide_at)
+            if el >= self.SLIDE_MS:
+                self._land(now)
+            else:
+                t = el / self.SLIDE_MS
+                # ease out: the line settles instead of stopping dead
+                self.slide = int(self.SLOT_H * (1.0 - (1.0 - t) * (1.0 - t)))
+                if self.slide < 1:
+                    self.slide = 1
+                self.dirty_lines = True
+            self.animating = True
+            return True
+
         if not self.long:
             self.animating = False
             return redraw
