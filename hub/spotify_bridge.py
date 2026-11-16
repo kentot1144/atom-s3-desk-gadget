@@ -66,6 +66,16 @@ _spotapi_retry_at = 0.0
 _spot_fetch_at = 0.0
 _spot_last = None
 
+# A paused track must never look like it is playing.  Windows media sessions
+# and Spotify's connect-state can keep is_playing=True after a pause, after the
+# desktop app closes, or when a state refresh stops arriving.  A track that is
+# really playing advances about in real time, so judge the trend over a few
+# seconds instead of trusting one sample.
+_STALL_WINDOW = 6.0
+_STALL_MIN_SPAN = 4.0
+_STALL_RATIO = 0.5
+_watch = {"key": None, "samples": []}
+
 
 # ---------------------------------------------------------------- public API
 def status():
@@ -74,9 +84,17 @@ def status():
         _last_read = time.time()
         st = dict(_state)
     at = st.pop("_at", None)
+    now = time.time()
+    # If the worker stopped refreshing (hung backend, dead thread), never keep
+    # reporting the last state as playing: the device would keep advancing a
+    # bar for a track that is not running.
+    if st.get("is_playing") and at and (now - at) > 8.0:
+        st["is_playing"] = False
+        st["message"] = "paused"
+        st["stalled"] = True
     if at and st.get("is_playing"):
         dur = int(st.get("duration_ms") or 0)
-        pos = int(st.get("progress_ms") or 0) + int((time.time() - at) * 1000)
+        pos = int(st.get("progress_ms") or 0) + int((now - at) * 1000)
         if pos < 0:
             pos = 0
         if dur and pos > dur:
@@ -213,6 +231,70 @@ def _log(msg):
 def _short(err, n=120):
     s = str(err).replace("\n", " ").strip()
     return s[:n] if s else err.__class__.__name__
+
+
+def _advance_ok(key, pos, playing, now=None):
+    """Return False when 'playing' is contradicted by a frozen position.
+
+    A real playing track advances roughly in real time; a paused one only
+    jitters by a second or so.  Judge the trend over a few seconds, averaging
+    the ends of the window so per-sample jitter cancels out.  A short
+    recent-versus-prior check clears a stall about two seconds after playback
+    resumes, instead of making the display sit on PAUSED.
+    """
+    if now is None:
+        now = time.monotonic()
+    w = _watch
+    if not playing:
+        w["key"] = key
+        w["samples"] = []
+        w["stalled"] = False
+        return False
+
+    samples = w["samples"]
+    if w["key"] != key:
+        w["key"] = key
+        w["samples"] = []
+        w["stalled"] = False
+        samples = w["samples"]
+    if samples:
+        prev = samples[-1][1]
+        # A seek jumps far; start a fresh window instead of calling it a stall.
+        if pos < prev - 2000 or pos > prev + 8000:
+            w["samples"] = []
+            w["stalled"] = False
+            samples = w["samples"]
+
+    samples.append((now, pos))
+    cutoff = now - _STALL_WINDOW
+    while samples and samples[0][0] < cutoff:
+        samples.pop(0)
+    # Not enough history yet: leave the previous verdict alone so a fresh
+    # start is not called a stall.
+    if len(samples) < 2 or (samples[-1][0] - samples[0][0]) < _STALL_MIN_SPAN:
+        return not w.get("stalled", False)
+
+    t0 = samples[0][0]
+    t1 = samples[-1][0]
+
+    # Fast resume: the newest two seconds should be clearly ahead of the two
+    # seconds before them.  Playing at 1x gains about 2 s there; pause jitter
+    # stays well under 1.5 s.
+    recent = [p for t, p in samples if t >= t1 - 2.0]
+    prior = [p for t, p in samples if t1 - 4.0 <= t < t1 - 2.0]
+    if recent and prior:
+        gain = (sum(recent) / len(recent)) - (sum(prior) / len(prior))
+        if gain >= 1500:
+            w["stalled"] = False
+            return True
+
+    head = [p for t, p in samples if t <= t0 + 1.5]
+    tail = [p for t, p in samples if t >= t1 - 1.5]
+    if not head or not tail:
+        return not w.get("stalled", False)
+    advance = (sum(tail) / len(tail)) - (sum(head) / len(head))
+    w["stalled"] = advance < (t1 - t0) * 1000.0 * _STALL_RATIO
+    return not w["stalled"]
 
 
 def _parse_cookie_string(text):
@@ -476,9 +558,13 @@ def _refresh_spotapi():
     if not artist and meta and meta.album_title:
         artist = meta.album_title
 
-    playing = st.is_playing
-    if playing is None:
-        playing = not bool(st.is_paused)
+    # is_paused wins: Spotify can leave is_playing=True on a paused device.
+    if st.is_paused:
+        playing = False
+    else:
+        playing = st.is_playing
+        if playing is None:
+            playing = True
 
     pos = int(st.position_as_of_timestamp or 0)
     try:
@@ -495,6 +581,9 @@ def _refresh_spotapi():
         pos = 0
     if dur and pos > dur:
         pos = dur
+
+    # Even when the state says playing, a frozen position means it is not.
+    playing = _advance_ok((song, artist, dur), pos, bool(playing))
 
     _spot_last = {
         "song": song or "-",
@@ -731,7 +820,14 @@ def _run_spotapi(cmd):
         p.skip_prev()
     else:
         st = p.state
-        playing = st.is_playing if st.is_playing is not None else not st.is_paused
+        # is_paused wins: a stale is_playing=True must not turn a resume into
+        # another pause.
+        if st.is_paused:
+            playing = False
+        elif st.is_playing is None:
+            playing = True
+        else:
+            playing = bool(st.is_playing)
         if playing:
             p.pause()
         else:
@@ -831,6 +927,9 @@ def _smtc_refresh():
     import asyncio
 
     data = asyncio.run(_smtc_read())
+    data["is_playing"] = _advance_ok(
+        (data.get("song"), data.get("artist"), data.get("duration_ms")),
+        int(data.get("progress_ms") or 0), bool(data.get("is_playing")))
     _set(**data)
     if data.get("status") == "success":
         _lyrics_prefetch(data.get("song"), data.get("artist"),

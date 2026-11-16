@@ -55,9 +55,8 @@ class SpotDraw:
     def _chrome(self):
         """Header and dots.  The slide can push text into the top strip."""
         app = self.app
-        d = app.hub.sp or {}
         header("SPOTIFY", app.idx, len(app.page_list()),
-               GREEN if d.get("is_playing") else ACCENT)
+               GREEN if app.hub.playing() else ACCENT)
         dots(len(app.page_list()), app.idx)
 
     def _draw_full(self):
@@ -157,7 +156,7 @@ class SpotDraw:
         if not d:
             return
         LCD.fillRect(0, self.PROG_Y, W, self.PROG_H, BLACK)
-        playing = bool(d.get("is_playing"))
+        playing = self.app.hub.playing()
         dur = int(d.get("duration_ms") or 0)
         pos = self._pos()
         pct = (pos * 100 // dur) if dur else 0

@@ -134,7 +134,7 @@ class Spot(SpotDraw):
             self._fail(sp.get("message") or st or "ERROR")
             return self.dirty_full
         sig = (sp.get("song"), sp.get("artist"), sp.get("device"),
-               bool(sp.get("is_playing")))
+               hub.playing())
         prev = self.sig
         self.sig = sig
         if sig != prev:

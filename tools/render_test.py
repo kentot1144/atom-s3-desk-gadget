@@ -29,6 +29,7 @@ gc.mem_free = lambda: 100352
 
 DRAWS = []
 COLORS = []
+TEXTS = []
 
 
 class Font:
@@ -58,12 +59,15 @@ class Display:
     def setTextSize(self, v): self.size = v
     def getTextSize(self): return self.size
     def setBrightness(self, v): pass
-    def drawString(self, *a): DRAWS.append("text")
+    def drawString(self, s, *a):
+        DRAWS.append("text")
+        TEXTS.append(s)
 
     def print(self, s):
         if not isinstance(s, str):
             raise TypeError("display.print got %r" % (s,))
         DRAWS.append("text")
+        TEXTS.append(s)
 
     def textWidth(self, s, f):
         return int(len(s) * f.w * self.size)
@@ -274,6 +278,91 @@ def main():
                 failures += 1
                 print("FAIL spotify   %-14s %r"
                       % ("%s lyrics=%d" % (label, lyrics), e))
+
+    # A paused payload must actually draw PAUSED, and its progress must stop
+    # instead of creeping forward.
+    app.hub.sp = dict(base, is_playing=False)
+    app.hub.sp_pos = 52000
+    app.hub.sp_at = time.ticks_add(time.ticks_ms(), -5000)
+    app.hub.ok_at = time.ticks_ms()
+    app.spot.enter()
+    app.spot.lyrics = False
+    app.spot.dirty_full = True
+    del TEXTS[:]
+    app.spot.refresh(time.ticks_ms())
+    app.spot.draw()
+    paused_pos = app.hub.progress()
+    if "PAUSED" not in TEXTS or "PLAYING" in TEXTS:
+        failures += 1
+        print("FAIL spotify   paused did not draw PAUSED")
+    else:
+        print("ok   spotify   paused draws PAUSED")
+    if paused_pos != 52000:
+        failures += 1
+        print("FAIL spotify   paused progress moved to %d" % paused_pos)
+    else:
+        print("ok   spotify   paused progress frozen")
+
+    # A stale hub feed must not keep showing the last playing state.
+    app.hub.sp = dict(base, is_playing=True)
+    app.hub.ok_at = time.ticks_add(time.ticks_ms(), -15000)
+    app.spot.enter()
+    app.spot.lyrics = False
+    app.spot.dirty_full = True
+    del TEXTS[:]
+    app.spot.refresh(time.ticks_ms())
+    app.spot.draw()
+    if "HUB OFFLINE" not in TEXTS or "PLAYING" in TEXTS:
+        failures += 1
+        print("FAIL spotify   stale hub still showed playing")
+    else:
+        print("ok   spotify   stale hub shows offline")
+    app.hub.sp = dict(base)
+    app.hub.ok_at = time.ticks_ms()
+
+    # Defense in depth: even if an old hub keeps is_playing=True, the device
+    # must notice a frozen position and stop drawing PLAYING.
+    now = time.ticks_ms()
+    frozen = dict(base, is_playing=True, progress_ms=52000)
+    app.hub.sp = frozen
+    app.hub.sp_pos = 52000
+    app.hub.sp_at = now
+    app.hub.sp_stalled = False
+    app.hub.sp_playing = True
+    app.hub.sp_key = (frozen.get("song"), frozen.get("artist"),
+                      int(frozen.get("duration_ms") or 0))
+    app.hub.sp_hist = [(time.ticks_add(now, -10000), 52000),
+                       (time.ticks_add(now, -4000), 52000)]
+    app.hub._watch_sp()
+    app.spot.enter()
+    app.spot.lyrics = False
+    app.spot.dirty_full = True
+    del TEXTS[:]
+    app.spot.refresh(time.ticks_ms())
+    app.spot.draw()
+    if app.hub.playing() or "PLAYING" in TEXTS or "PAUSED" not in TEXTS:
+        failures += 1
+        print("FAIL spotify   frozen device feed still playing")
+    else:
+        print("ok   spotify   frozen feed draws PAUSED")
+
+    # A frozen device feed must clear within a few seconds of real movement.
+    now = time.ticks_ms()
+    app.hub.sp_stalled = True
+    app.hub.sp_playing = True
+    app.hub.sp_pos = 53500
+    app.hub.sp_hist = [(time.ticks_add(now, -3000), 51500)]
+    app.hub._watch_sp()
+    if app.hub.sp_stalled or not app.hub.playing():
+        failures += 1
+        print("FAIL spotify   device stall did not clear on resume")
+    else:
+        print("ok   spotify   device stall clears on resume")
+    app.hub.sp = dict(base)
+    app.hub.sp_stalled = False
+    app.hub.sp_hist = []
+    app.hub.sp_playing = True
+    app.hub.ok_at = time.ticks_ms()
 
     app.spot.lyrics = True
     long_lines = (

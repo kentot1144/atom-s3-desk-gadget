@@ -134,6 +134,10 @@ class Hub:
         self.last_event = 0
         self.sp_pos = 0
         self.sp_at = time.ticks_ms()
+        self.sp_hist = []
+        self.sp_stalled = False
+        self.sp_key = None
+        self.sp_playing = False
 
     def age(self):
         return time.ticks_diff(time.ticks_ms(), self.ok_at) // 1000
@@ -146,7 +150,7 @@ class Hub:
 
     def progress(self):
         pos = self.sp_pos
-        if self.sp.get("is_playing"):
+        if self.playing():
             pos += time.ticks_diff(time.ticks_ms(), self.sp_at)
         dur = int(self.sp.get("duration_ms") or 0)
         if pos < 0:
@@ -154,6 +158,67 @@ class Hub:
         if dur and pos > dur:
             pos = dur
         return pos
+
+    def playing(self):
+        """Spotify is really playing, not just a stale is_playing flag."""
+        return bool(self.sp.get("is_playing")) and not self.sp_stalled
+
+    def _watch_sp(self):
+        """Catch a frozen position even if the hub still says playing.
+
+        The hub normally filters this, but an older hub build (or a stalled
+        state refresh) can leave is_playing=True.  Anchors arrive every few
+        seconds; a real track advances by roughly the elapsed time, while a
+        paused one only jitters by a second or so.
+        """
+        now = time.ticks_ms()
+        sp = self.sp
+        playing = bool(sp.get("is_playing"))
+        key = (sp.get("song"), sp.get("artist"),
+               int(sp.get("duration_ms") or 0))
+        if playing and not self.sp_playing:
+            # Playback just started: trust the hub and start a fresh window
+            # instead of staying stuck on an old stall.
+            self.sp_hist = []
+            self.sp_stalled = False
+        self.sp_playing = playing
+        if not playing or self.sp_key != key:
+            self.sp_key = key
+            self.sp_hist = []
+            self.sp_stalled = False
+            if not playing:
+                return
+        self.sp_hist.append((now, self.sp_pos))
+        while self.sp_hist and (
+                len(self.sp_hist) > 6 or
+                time.ticks_diff(now, self.sp_hist[0][0]) > 12000):
+            self.sp_hist.pop(0)
+        if len(self.sp_hist) < 2:
+            return
+        if self.sp_stalled:
+            # Fast resume: a position that clearly advances over the last
+            # couple of samples means playback restarted, even while old
+            # frozen samples are still inside the window.
+            t1, p1 = self.sp_hist[-1]
+            for t, p in reversed(self.sp_hist[:-1]):
+                d2 = time.ticks_diff(t1, t)
+                if d2 >= 1500:
+                    if p1 - p >= d2 * 0.6:
+                        self.sp_stalled = False
+                    break
+            if not self.sp_stalled:
+                return
+        t0, p0 = self.sp_hist[0]
+        dt = time.ticks_diff(now, t0)
+        if dt < 6000:
+            return
+        advance = self.sp_pos - p0
+        if advance < -2000:
+            # A seek or track jump is not a stall.
+            self.sp_hist = [(now, self.sp_pos)]
+            self.sp_stalled = False
+            return
+        self.sp_stalled = advance < dt * 0.4
 
     def _ok_target(self, host):
         """A private hub address is only useful on its own subnet."""
@@ -260,6 +325,7 @@ class Hub:
             self.sp = j["sp"] or {}
             self.sp_pos = int(self.sp.get("progress_ms") or 0)
             self.sp_at = time.ticks_ms()
+            self._watch_sp()
         if "ly" in j:
             self.ly = j["ly"] or {}
         if "ev" in j:
