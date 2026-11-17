@@ -225,6 +225,28 @@ def main():
             failures += 1
             print("FAIL %-9s %r" % (name, e))
 
+    # Status sub-page 2: the bare Spotify state, playing and paused.
+    saved_sp = app.hub.sp
+    app.st_page = 1
+    for playing, want in ((True, "PLAYING"), (False, "PAUSED")):
+        app.hub.sp = dict(saved_sp, is_playing=playing)
+        del TEXTS[:]
+        try:
+            app.draw_status({"k": "status", "t": "STATUS"})
+            missing = [w for w in (want, "STATUS 2/2", "Way Back Home")
+                       if w not in TEXTS]
+            if missing:
+                failures += 1
+                print("FAIL status_sp %s missing %s" % (want, missing))
+            else:
+                print("ok   status_sp   %-8s %3d draws"
+                      % (want, len(DRAWS)))
+        except Exception as e:
+            failures += 1
+            print("FAIL status_sp %r" % (e,))
+    app.hub.sp = saved_sp
+    app.st_page = 0
+
     # a leftover lyric scale must never shrink normal page text
     LCD.setTextSize(0.8)
     app.idx = 0

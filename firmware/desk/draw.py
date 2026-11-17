@@ -3,12 +3,12 @@ import M5
 import gc
 import sys
 import time
-from desk.ui import ACCENT, ACCENT2, AMBER, BLACK, F_BIG, F_MD, F_SM, F_TINY, GREEN, LCD, LINE, MON, MUTED, ORANGE, PANEL, PURPLE, RED, W, WD, WHITE, age_text, atom_face, bar, ctemp, ctext, dots, header, pc, rtemp, rtext, seg_time, t1, temp, tl, wrap
+from desk.ui import ACCENT, ACCENT2, AMBER, BLACK, F_BIG, F_MD, F_SM, F_TINY, GREEN, LCD, LINE, MON, MUTED, ORANGE, PANEL, PURPLE, RED, W, WD, WHITE, age_text, atom_face, bar, ctemp, ctext, dots, header, mmss, pc, rtemp, rtext, seg_time, t1, temp, tl, wrap
 
 class AppDraw:
-    def _head(self, p, color=None):
+    def _head(self, p, color=None, title=None):
         n = len(self.page_list())
-        header(p.get("t") or "", self.idx, n,
+        header((p.get("t") or "") if title is None else title, self.idx, n,
                pc(p.get("hc")) if color is None and p.get("hc") is not None
                else (color or ACCENT))
         dots(n, self.idx)
@@ -203,8 +203,17 @@ class AppDraw:
         dots(len(self.page_list()), self.idx)
 
     def draw_status(self, p):
+        """Status alternates: system health, then the bare Spotify state."""
+        st = int(getattr(self, "st_page", 0))
+        title = "STATUS %d/2" % (st + 1)
+        if st:
+            self._draw_status_spot(p, title)
+        else:
+            self._draw_status_sys(p, title)
+
+    def _draw_status_sys(self, p, title):
         LCD.fillScreen(BLACK)
-        self._head(p, RED if self.alert() else ACCENT)
+        self._head(p, RED if self.alert() else ACCENT, title)
         ip, rssi = "-", 0
         if self.wifi.up():
             try:
@@ -249,6 +258,46 @@ class AppDraw:
         else:
             txt, c = (self.hub.err or "OFFLINE")[:10], RED
         rtext(txt, F_TINY, 122, 110, c)
+        dots(len(self.page_list()), self.idx)
+        self.status_at = time.ticks_ms()
+
+    def _draw_status_spot(self, p, title):
+        """Bare Spotify state: what is playing and how far in."""
+        LCD.fillScreen(BLACK)
+        sp = self.hub.sp or {}
+        fresh = self.hub.fresh(15000)
+        playing = self.hub.playing()
+        status = sp.get("status")
+        if not fresh:
+            label, col = "HUB OFFLINE", RED
+        elif status == "success":
+            label, col = ("PLAYING", GREEN) if playing else ("PAUSED", AMBER)
+        elif status == "not_playing":
+            label, col = "STOPPED", MUTED
+        elif status == "connecting":
+            label, col = "CONNECTING", ACCENT
+        else:
+            label, col = "NO MUSIC", MUTED
+        self._head(p, RED if self.alert() else ACCENT, title)
+        ctext(label, F_MD, 23, col)
+        song = sp.get("song") or "-"
+        artist = sp.get("artist") or "-"
+        device = sp.get("device") or "-"
+        if song == "-":
+            ctext("NO TRACK", F_SM, 45, MUTED)
+        else:
+            for i, line in enumerate(wrap(song, F_SM, 116, 2)):
+                t1(line, F_SM, 6, 44 + i * 14, WHITE)
+        tl((artist if artist != "-" else "UNKNOWN ARTIST")[:21],
+           F_TINY, 6, 74, MUTED)
+        tl(("ON " + (device if device != "-" else "--"))[:21],
+           F_TINY, 6, 86, ACCENT)
+        pos = self.hub.progress()
+        dur = int(sp.get("duration_ms") or 0)
+        pct = int(pos * 100 / dur) if dur else 0
+        bar(6, 98, 116, 5, pct, GREEN if playing else AMBER)
+        tl(mmss(pos), F_TINY, 6, 106, MUTED)
+        rtext(mmss(dur) if dur else "--:--", F_TINY, 122, 106, MUTED)
         dots(len(self.page_list()), self.idx)
         self.status_at = time.ticks_ms()
 

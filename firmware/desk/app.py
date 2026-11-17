@@ -47,6 +47,10 @@ class App(AppDraw, AppLoop):
         self.rs_page = 0
         self.rs_at = 0
 
+        # Status sub-pages: 0 = system health, 1 = bare Spotify state.
+        self.st_page = 0
+        self.st_at = 0
+
         self.face = {"breath": 0, "dev": 0, "tm": 0, "st": 0, "open": 3000}
         self.rst = {"state": "idle", "msg": "", "at": 0, "sent": 0,
                     "dots": 0, "check_at": 0, "checks": 0, "good": 0,
@@ -99,6 +103,8 @@ class App(AppDraw, AppLoop):
         self.status_at = 0
         self.rs_page = 0
         self.rs_at = time.ticks_ms()
+        self.st_page = 0
+        self.st_at = time.ticks_ms()
         p = self.page()
         if p.get("k") == "spotify":
             self.spot.enter()

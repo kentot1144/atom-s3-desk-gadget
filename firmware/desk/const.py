@@ -21,3 +21,6 @@ NOTIF_MAX_AGE_S = 300
 
 # Auto-advancing rows page (servers): one sub-page at a time, then wrap.
 ROWS_PAGE_MS = 3600
+
+# Status alternates between system health and the bare Spotify state.
+STATUS_PAGE_MS = 5000

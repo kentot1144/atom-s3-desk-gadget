@@ -3,7 +3,7 @@ import M5
 import gc
 import math
 import time
-from desk.const import CLICK_GAP_MS, HOLD_MS, HUB_POLL_LIVE_MS, HUB_POLL_MS, NOTIF_MAX_AGE_S, NOTIF_SHOW_MS, NTP_FALLBACK_MS, ROWS_PAGE_MS, SOFT_HOLD_MS
+from desk.const import CLICK_GAP_MS, HOLD_MS, HUB_POLL_LIVE_MS, HUB_POLL_MS, NOTIF_MAX_AGE_S, NOTIF_SHOW_MS, NTP_FALLBACK_MS, ROWS_PAGE_MS, SOFT_HOLD_MS, STATUS_PAGE_MS
 from desk.ui import AMBER, GREEN, RED, splash, splash_line
 
 
@@ -296,6 +296,10 @@ class AppLoop:
                     except Exception as e:
                         print("draw", e)
             elif kind == "status":
+                if time.ticks_diff(now, self.st_at) >= STATUS_PAGE_MS:
+                    self.st_page = 1 - self.st_page
+                    self.st_at = now
+                    self.status_at = 0
                 if time.ticks_diff(now, self.status_at) >= 1000:
                     try:
                         self.draw_status(p)
