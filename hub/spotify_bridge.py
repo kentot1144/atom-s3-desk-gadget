@@ -926,7 +926,15 @@ async def _smtc_send(cmd):
 def _smtc_refresh():
     import asyncio
 
-    data = asyncio.run(_smtc_read())
+    try:
+        data = asyncio.run(asyncio.wait_for(_smtc_read(), 8))
+    except Exception as e:
+        # Windows can leave a dead media session behind (for example after
+        # Spotify is restarted externally).  Never let that freeze the worker
+        # or keep an old "playing" state alive.
+        _set(status="error", message="media session: " + _short(e),
+             is_playing=False)
+        return
     data["is_playing"] = _advance_ok(
         (data.get("song"), data.get("artist"), data.get("duration_ms")),
         int(data.get("progress_ms") or 0), bool(data.get("is_playing")))
@@ -940,7 +948,10 @@ def _smtc_command(cmds):
     import asyncio
 
     for cmd in cmds:
-        asyncio.run(_smtc_send(cmd))
+        try:
+            asyncio.run(asyncio.wait_for(_smtc_send(cmd), 6))
+        except Exception:
+            pass
 
 
 # -------------------------------------------------------------------- worker

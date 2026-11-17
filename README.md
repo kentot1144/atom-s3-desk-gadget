@@ -22,7 +22,9 @@ small Python hub that runs on a PC in the same LAN.
   dismissable full-screen banner, flashes the LED and keeps the last 20 events
   on a NOTICES page. Minecraft joins and leaves are generated automatically.
 - **Service uptime sparkline** on the STATUS page, plus the last time a service
-  went down.
+  went down. The STATUS page also alternates every 5 s with a bare Spotify panel
+  (state, track, artist, device and progress), so playback is visible without
+  leaving the page ring.
 - **Alert LED** on GPIO5 flashes when a critical service is down.
 - **Auto-brightness** from the on-board light sensor (GPIO6).
 - **Spotify screen**: shows track, artist and the playing device, with
@@ -186,6 +188,19 @@ a new copy prints a message and exits instead of competing for requests.
 `check_hub.vbs` runs every 2 minutes from Task Scheduler; if `/ping` does not
 answer, it starts the hub again. It is windowless, like the launcher.
 
+To update the Spotify bridge on a running hub, use the deploy helper on the hub
+PC. It backs up the current file, installs the fixed one, restarts the hub and
+waits for `/ping`:
+
+```bat
+python tools\deploy_hub.py --dry-run
+python tools\deploy_hub.py --yes
+python tools\deploy_hub.py --yes --watch   REM pause/resume Spotify while watching
+```
+
+`--probe-only` only prints the live Spotify state. `--source` accepts a local
+file or URL instead of the copy in this repo.
+
 #### Reaching the hub over the internet
 
 Run the hub on the machine that stays on (for example a home server) and add
@@ -294,6 +309,15 @@ cached per track, with a duration-matched search fallback for localized names.
 The hub owns the authoritative playback position and publishes the current line
 and the two coming lines in the `ly` section. `/lyrics?pos=<ms>` remains for
 compatibility.
+
+A paused track must never look like it is playing. The bridge treats
+`is_paused` as authoritative and also watches the position: a real playing track
+advances roughly once per second, while a paused one only jitters. If the
+reported position is frozen over a six-second window, `is_playing` is cleared
+even when Windows still says playing. A seek or track change resets the window,
+and playback that resumes clears the stall within a few seconds. The device
+repeats the same check locally, so an older hub build cannot keep the progress
+bar moving. The bar is green while playing and amber while paused.
 
 ## Device state stream
 
