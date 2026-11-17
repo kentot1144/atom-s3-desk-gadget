@@ -162,5 +162,5 @@ class SpotDraw:
         bar(6, self.PROG_Y + 1, 116, 5, pct, GREEN if playing else AMBER)
         tl(mmss(pos), F_TINY, 6, self.PROG_Y + 8, MUTED)
         rtext(mmss(dur), F_TINY, 122, self.PROG_Y + 8, MUTED)
-        ctext("PLAYING" if playing else "PAUSED", F_TINY, self.PROG_Y + 15,
+        ctext("PLAYING" if playing else "PAUSED", F_TINY, self.PROG_Y + 20,
               GREEN if playing else AMBER)

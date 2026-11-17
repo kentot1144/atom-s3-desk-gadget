@@ -468,6 +468,12 @@ def main():
         failures += 1
         print("FAIL scale     %d rows at %d px do not fit %d px"
               % (app.spot.cur_rows, app.spot.slot_h, app.spot.BAND_H))
+    if app.spot.BAND_Y + app.spot.MAX_ROWS * app.spot.SLOT_H > app.spot.PROG_Y:
+        failures += 1
+        print("FAIL layout    four lyric rows reach into the progress area")
+    if app.spot.PROG_Y + 8 + 11 > app.spot.PROG_Y + 20:
+        failures += 1
+        print("FAIL layout    time row overlaps the play state")
     if " ".join(app.spot.disp[:app.spot.cur_rows]).split() != four.split():
         failures += 1
         print("FAIL wrap      wrapped rows do not read as the sentence")
