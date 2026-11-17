@@ -436,22 +436,31 @@ def main():
             failures += 1
             print("FAIL wrap      japanese line was not split: %r" % (rows,))
 
-    # a line that needs a fourth row shrinks the block instead of clipping it
-    four = "one two three four five six seven"
+    # A line that needs extra rows keeps the same mid-size font and pitch; it
+    # continues onto the next row instead of shrinking or clipping.
+    three = "one two three four five six seven"
+    app.spot.buf = (three, "next line", "")
+    app.spot._build_disp()
+    small = (app.spot.txt, app.spot.slot_h, app.spot.cur_rows)
+
+    four = "one two three four five six seven eight nine"
     base_rows = app.spot._wrap(four, app.spot.MAX_ROWS, app.spot.TXT)
     app.spot.buf = (four, "next line", "")
     app.spot._build_disp()
-    print("ok   spotify   four-row base=%d scale=%s rows=%d pitch=%d"
-          % (len(base_rows), app.spot.txt, app.spot.cur_rows,
+    print("ok   spotify   wrap levels=%s/%s rows=%d/%d pitch=%d"
+          % (small[0], app.spot.txt, small[2], app.spot.cur_rows,
              app.spot.slot_h))
-    if len(base_rows) < 3:
+    if len(base_rows) < 4:
         failures += 1
         print("FAIL wrap      four-row fixture only wrapped to %d"
               % len(base_rows))
-    if app.spot.txt != app.spot.TXT_SM:
+    if app.spot.txt != app.spot.TXT or app.spot.slot_h != app.spot.SLOT_H:
         failures += 1
-        print("FAIL scale     four rows did not shrink text (scale %s)"
-              % app.spot.txt)
+        print("FAIL scale     rows changed size or pitch (%s/%d)"
+              % (app.spot.txt, app.spot.slot_h))
+    if (small[0], small[1]) != (app.spot.txt, app.spot.slot_h):
+        failures += 1
+        print("FAIL scale     a 3-row line and a 4-row line differ")
     if app.spot.cur_rows > app.spot.MAX_ROWS:
         failures += 1
         print("FAIL scale     %d rows still exceed the band" % app.spot.cur_rows)
@@ -459,6 +468,9 @@ def main():
         failures += 1
         print("FAIL scale     %d rows at %d px do not fit %d px"
               % (app.spot.cur_rows, app.spot.slot_h, app.spot.BAND_H))
+    if " ".join(app.spot.disp[:app.spot.cur_rows]).split() != four.split():
+        failures += 1
+        print("FAIL wrap      wrapped rows do not read as the sentence")
     del DRAWS[:]
     try:
         app.spot.slide = 0

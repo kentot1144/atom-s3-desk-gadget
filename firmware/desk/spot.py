@@ -1,10 +1,11 @@
 """Spotify page state machine: horizontal scroll, lyric slide-up and timing.
 
 Lyrics behave like a small teleprompter.  The line being sung is on top and the
-coming lines are below; a line that is wider than the panel is wrapped into
-extra rows instead of scrolling sideways, and when the line changes the block
-slides up by however many rows the finished line used.  A line that needs more
-than four rows is paged through over time so no row is cut off.
+coming lines are below; a line that is wider than the panel continues on the
+next row instead of scrolling sideways or changing font size, and when the line
+changes the block slides up by however many rows the finished line used.  Every
+row uses the same mid-size font and pitch.  A line that needs more than four
+rows is paged through over time so no row is cut off.
 """
 import time
 
@@ -69,7 +70,7 @@ class Spot(SpotDraw):
         self.page_line = ""         # line the page index belongs to
         self.page_ms = self.PAGE_MS
         self.page_at = 0
-        self.txt = self.TXT         # chosen lyric scale for the current line
+        self.txt = self.TXT         # fixed lyric scale (every row matches)
         self.slot_h = self.SLOT_H   # matching row pitch
         self.slide = 0              # px the lyric block has slid up
         self.slide_px = self.SLOT_H
@@ -334,16 +335,11 @@ class Spot(SpotDraw):
         return tuple(rows[:limit])
 
     def _build_disp(self):
-        # Wrap the whole line at the normal scale first.  If that line plus
-        # one preview row would need a fourth row, shrink the block so four
-        # rows fit.  A line that is still longer than four rows keeps every
-        # row and is paged over time instead of being clipped.
-        base = self._wrap(self.buf[0], self.MAX_WRAP, self.TXT)
-        need = len(base) + (1 if (self.buf[1] or "").strip() else 0)
-        if need > 3:
-            self.txt, self.slot_h = self.TXT_SM, self.SLOT_H_SM
-        else:
-            self.txt, self.slot_h = self.TXT, self.SLOT_H
+        # Every lyric row uses the same mid-size font and pitch, so the block
+        # never changes shape from one line to the next.  A line that wraps
+        # continues on the next row; only a line longer than four rows is
+        # paged, and the pages keep the words in reading order.
+        self.txt, self.slot_h = self.TXT, self.SLOT_H
         self.w_cur = self._wrap(self.buf[0], self.MAX_WRAP, self.txt)
         self.w_next = self._wrap(self.buf[1], self.MAX_WRAP, self.txt)
         self.w_n2 = self._wrap(self.buf[2], self.MAX_WRAP, self.txt)

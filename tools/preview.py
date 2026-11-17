@@ -27,7 +27,7 @@ FONT_FILES = {
     "40": "consolab.ttf",
     "ja": "YuGothR.ttc",
 }
-FONT_PX = {"9": 10, "12": 13, "18": 18, "40": 40, "ja": 12}
+FONT_PX = {"9": 10, "12": 13, "18": 18, "40": 40, "ja": 20}
 OPS = []
 
 
@@ -142,19 +142,37 @@ def build_app():
     return app
 
 
+def spot_frame(app, line, nxt, nxt2):
+    """Draw the Spotify page with lyrics for one wrapped line."""
+    app.hub.ly = {"status": "success", "line": line, "next": nxt,
+                  "next2": nxt2, "line_at": 0, "next_at": 9000}
+    app.spot.enter()
+    app.spot.lyrics = True
+    app.spot.buf = (line, nxt, nxt2)
+    app.spot.line = line
+    app.spot.lyr_key = ("success", line)
+    app.spot._plan_lyrics(rt.time.ticks_ms())
+    app.spot.slide = 0
+    app.spot.dirty_full = True
+    del OPS[:]
+    app.spot.draw()
+    return paint(list(OPS))
+
+
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "status_preview.png"
     recorder = Recorder()
     rt.sys.modules["M5"].Display = recorder
 
     app = build_app()
+    app.idx = 0
     page = {"k": "status", "t": "STATUS", "up": 3, "tot": 3, "last": 0}
 
     frames = []
     app.st_page = 0
     del OPS[:]
     app.draw_status(page)
-    frames.append(("STATUS 1/2 - system", paint(list(OPS))))
+    frames.append(("STATUS 1/2", paint(list(OPS))))
 
     for playing, label in ((True, "PLAYING"), (False, "PAUSED")):
         app.st_page = 1
@@ -162,6 +180,17 @@ def main():
         del OPS[:]
         app.draw_status(page)
         frames.append(("STATUS 2/2 - " + label, paint(list(OPS))))
+
+    app.hub.sp = dict(rt.STATE["sp"], is_playing=True)
+    app.hub.ok_at = rt.time.ticks_ms()
+    app.mode = 1
+    app.idx = 0
+    frames.append(("LYRICS 3 rows", spot_frame(
+        app, "Every little thing you said",
+        "is ringing in my head", "and I cannot let it go")))
+    frames.append(("LYRICS 4 rows", spot_frame(
+        app, "I never knew that every road would lead me home",
+        "but here I am again", "standing at your door")))
 
     gap = 24
     sheet = Image.new(

@@ -9,18 +9,17 @@ class SpotDraw:
     LYRIC_STEP_MAX = 8
     LYRIC_HOLD_MS = 300      # pause at each end of a lyric line
     HOLD_MS = 1000
-    BAND_Y, BAND_H = 21, 63
-    PROG_Y, PROG_H = 84, 34
+    BAND_Y, BAND_H = 21, 69
+    PROG_Y, PROG_H = 90, 32
 
-    # Lyrics are a teleprompter.  Rows are usually 0.8 scale (19 px glyphs in
-    # 21 px rows, three rows in the band).  When a line needs a fourth row the
-    # renderer drops to 0.6 (14 px glyphs in 15 px rows) so four rows fit.  A
-    # line that still needs more than four rows is paged through over time.
+    # Lyrics are a teleprompter with one fixed size, so the rows never jump or
+    # change shape between lines.  Every row uses mid-size (0.7) text on a 17 px
+    # pitch; four rows fit in the band.  A line that is longer than the panel
+    # continues on the following rows (never clipped mid-sentence), and a line
+    # that needs more than four rows is paged through over time.
     SLOT_Y = 22
-    SLOT_H = 21
-    TXT = 0.8
-    SLOT_H_SM = 15
-    TXT_SM = 0.6
+    SLOT_H = 17
+    TXT = 0.7
     MAX_ROWS = 4
     MAX_WRAP = 40            # safety cap; a long line pages instead of clipping
     SLIDE_MS = 260
@@ -160,8 +159,8 @@ class SpotDraw:
         dur = int(d.get("duration_ms") or 0)
         pos = self._pos()
         pct = (pos * 100 // dur) if dur else 0
-        bar(6, 85, 116, 5, pct, GREEN if playing else AMBER)
-        tl(mmss(pos), F_TINY, 6, 92, MUTED)
-        rtext(mmss(dur), F_TINY, 122, 92, MUTED)
-        ctext("PLAYING" if playing else "PAUSED", F_TINY, 104,
+        bar(6, self.PROG_Y + 1, 116, 5, pct, GREEN if playing else AMBER)
+        tl(mmss(pos), F_TINY, 6, self.PROG_Y + 8, MUTED)
+        rtext(mmss(dur), F_TINY, 122, self.PROG_Y + 8, MUTED)
+        ctext("PLAYING" if playing else "PAUSED", F_TINY, self.PROG_Y + 15,
               GREEN if playing else AMBER)

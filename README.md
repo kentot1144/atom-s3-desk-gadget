@@ -37,13 +37,12 @@ small Python hub that runs on a PC in the same LAN.
   a teleprompter of the current line plus the two coming lines, fetched from
   [LRCLIB](https://lrclib.net/) through the hub. The sung row is white and the
   coming lines are sky blue. Every ~4 s the device re-reads the line at its own
-  playback position, so it stays aligned with Spotify. Lyrics use a smaller CJK
-  font so the whole band is visible. A line wider than the panel wraps into rows
-  (Latin words kept whole, CJK split per character); three rows are drawn at
-  0.8 scale, and when a line plus its preview needs a fourth row the block
-  drops to 0.6 scale so all four fit. The block slides up by the rows the
-  finished line used. A line that still needs more than four rows is paged
-  through over time, so the tail is shown instead of being cut off.
+  playback position, so it stays aligned with Spotify. Every lyric row uses the
+  same mid-size CJK font (0.7) on an even 17 px pitch, so rows never change size
+  or jump between lines. A line wider than the panel continues on the next row
+  (Latin words kept whole, CJK split per character), so the sentence keeps its
+  order instead of being cut off. Up to four rows fit at once; a longer line is
+  paged through over time so its tail is still shown.
 - **Remote Spotify restart**: a Normal-mode page that kills and relaunches the
   Spotify desktop app on the hub PC, for when it hangs and needs an Alt+F4.
   Ten seconds after the request the device polls playback for six seconds and
