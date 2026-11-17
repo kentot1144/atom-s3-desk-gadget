@@ -108,6 +108,8 @@ hub/                 PC-side hub
 tools/               flashing and network diagnostics helpers
   push.py            flash firmware/ over the serial REPL
   wifi_import.py     merge every saved Windows Wi-Fi profile into config.json
+  render_test.py     render every page against a fake board (UI smoke test)
+  preview.py         paint the STATUS sub-pages to a PNG (needs pillow)
 ```
 
 The firmware is split into small modules on purpose. MicroPython compiles a
@@ -115,6 +117,10 @@ whole file before running it, and UIFlow2 2.3.1 only leaves about 112 KB of
 heap at boot; a single large `app.py` cannot be compiled there. Keep new
 modules under roughly 12 KB and import nothing at boot time that is not
 needed immediately.
+
+After touching a renderer, run `python tools/render_test.py` to draw every page
+against a fake board, and `python tools/preview.py out.png` to paint the STATUS
+sub-pages to an image (`pip install pillow`).
 
 ## Setup
 
