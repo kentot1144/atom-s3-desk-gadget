@@ -30,6 +30,8 @@ def check(name, ok, detail=""):
 
 def reset():
     sb._watch = {"key": None, "samples": [], "stalled": False}
+    sb._music = {"key": None, "pos": 0, "at": 0.0, "playing": False,
+                 "lag": 0, "stale": False}
 
 
 def frozen(jitter=700):
@@ -93,6 +95,45 @@ def test_watchdog():
           sb._advance_ok("k", 1000, False, now=0) is False)
 
 
+def test_music_clock():
+    """A stale connect-state frame must not rewind the bar or the lyrics."""
+    reset()
+    old_log = sb._log
+    sb._log = lambda msg: None
+    try:
+        key = ("song", "artist", 200000)
+        out = [sb._music_pos(key, 100000, True, now=0.0),
+               sb._music_pos(key, 100500, True, now=0.5)]
+        check("clock advances at 1x", out == [100000, 100500],
+              str(out))
+
+        # Spotapi hands back a frame ~30 s behind while the music keeps going.
+        out.append(sb._music_pos(key, 71000, True, now=1.0))
+        check("stale frame does not rewind", out[-1] >= 101000,
+              "(got %d)" % out[-1])
+        check("stale frame is recorded", sb._music["stale"] is True)
+        out.append(sb._music_pos(key, 71500, True, now=1.5))
+        check("clock runs while frame is stale", out[-1] >= 101500,
+              "(got %d)" % out[-1])
+        check("stale flag persists", sb._music["stale"] is True)
+
+        # The backend catches up: trust it again.
+        out.append(sb._music_pos(key, 105000, True, now=4.0))
+        check("caught-up frame re-anchors", out[-1] == 105000,
+              "(got %d)" % out[-1])
+        check("stale flag clears", sb._music["stale"] is False)
+
+        # A different track starts wherever the backend says it does.
+        out.append(sb._music_pos(("other", "artist", 190000), 1200, True,
+                                 now=4.5))
+        check("new track re-anchors", out[-1] == 1200)
+        sb._music_pos(("other", "artist", 190000), 1200, False, now=5.0)
+        check("pause clears the clock", sb._music["playing"] is False)
+    finally:
+        sb._log = old_log
+        reset()
+
+
 def test_is_paused_wins():
     class State(object):
         is_playing = True
@@ -142,6 +183,7 @@ def test_stale_state():
 
 def main():
     test_watchdog()
+    test_music_clock()
     test_is_paused_wins()
     test_stale_state()
     print("FAILURES:", len(FAILS))

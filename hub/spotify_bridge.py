@@ -76,6 +76,15 @@ _STALL_MIN_SPAN = 4.0
 _STALL_RATIO = 0.5
 _watch = {"key": None, "samples": []}
 
+# spotapi occasionally hands back a cached connect-state frame whose position
+# is tens of seconds behind the real playback.  Anchoring /state on it drags the
+# bar and the lyrics backwards, and the slow crawl that follows looks like a
+# stall, so the display flips to PAUSED while the music is still playing.  Keep
+# one real-time clock per track and ignore stale backend samples instead.
+_SAMPLE_TOL_MS = 1500
+_music = {"key": None, "pos": 0, "at": 0.0, "playing": False,
+          "lag": 0, "stale": False}
+
 
 # ---------------------------------------------------------------- public API
 def status():
@@ -295,6 +304,44 @@ def _advance_ok(key, pos, playing, now=None):
     advance = (sum(tail) / len(tail)) - (sum(head) / len(head))
     w["stalled"] = advance < (t1 - t0) * 1000.0 * _STALL_RATIO
     return not w["stalled"]
+
+
+def _music_pos(key, pos, playing, now=None):
+    """Return a monotonic, real-time position for one continuous track.
+
+    A stale spotapi/ SMTC frame must not rewind the progress bar or the lyric
+    line, and must not be mistaken for a paused track.  Run a small clock from
+    the last trusted anchor and only re-anchor on a new track, a forward seek,
+    or a reading that agrees with the clock.  A reading behind the clock is
+    discarded while the clock keeps advancing at 1x.
+    """
+    global _music
+    if now is None:
+        now = time.monotonic()
+    m = _music
+    if not playing:
+        m.update(key=key, pos=pos, at=now, playing=False, lag=0,
+                 stale=False)
+        return pos
+    if m["playing"] and m["key"] == key and m["at"]:
+        expected = m["pos"] + (now - m["at"]) * 1000.0
+        delta = pos - expected
+        if delta < -_SAMPLE_TOL_MS:
+            if not m["stale"]:
+                _log("stale media frame: raw=%d expected=%d delta=%+d"
+                     % (int(pos), int(expected), int(delta)))
+            m.update(pos=expected, at=now, lag=int(-delta), stale=True)
+            return expected
+        if m["stale"]:
+            _log("media position caught up: raw=%d expected=%d"
+                 % (int(pos), int(expected)))
+        m.update(key=key, pos=pos, at=now, playing=True, lag=0,
+                 stale=False)
+        if delta > _SAMPLE_TOL_MS:
+            _log("media seek: %+d ms" % int(delta))
+        return pos
+    m.update(key=key, pos=pos, at=now, playing=True, lag=0, stale=False)
+    return pos
 
 
 def _parse_cookie_string(text):
@@ -582,8 +629,15 @@ def _refresh_spotapi():
     if dur and pos > dur:
         pos = dur
 
-    # Even when the state says playing, a frozen position means it is not.
-    playing = _advance_ok((song, artist, dur), pos, bool(playing))
+    # Never anchor /state on a stale connect-state frame: it would rewind the
+    # progress bar and the lyrics, then look like a frozen track a few seconds
+    # later and flip to PAUSED.  The monotonic clock keeps advancing at 1x
+    # until the backend catches up; feed it to the stall check for the same
+    # reason.  is_paused above and status()'s stale-thread guard still catch
+    # a real stop.
+    key = (song, artist, dur)
+    pos = _music_pos(key, pos, bool(playing))
+    playing = _advance_ok(key, pos, bool(playing))
 
     _spot_last = {
         "song": song or "-",
@@ -935,9 +989,11 @@ def _smtc_refresh():
         _set(status="error", message="media session: " + _short(e),
              is_playing=False)
         return
-    data["is_playing"] = _advance_ok(
-        (data.get("song"), data.get("artist"), data.get("duration_ms")),
-        int(data.get("progress_ms") or 0), bool(data.get("is_playing")))
+    key = (data.get("song"), data.get("artist"), data.get("duration_ms"))
+    pos = _music_pos(key, int(data.get("progress_ms") or 0),
+                     bool(data.get("is_playing")))
+    data["progress_ms"] = pos
+    data["is_playing"] = _advance_ok(key, pos, bool(data.get("is_playing")))
     _set(**data)
     if data.get("status") == "success":
         _lyrics_prefetch(data.get("song"), data.get("artist"),

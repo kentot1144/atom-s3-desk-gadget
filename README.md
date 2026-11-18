@@ -42,7 +42,9 @@ small Python hub that runs on a PC in the same LAN.
   or jump between lines. A line wider than the panel continues on the next row
   (Latin words kept whole, CJK split per character), so the sentence keeps its
   order instead of being cut off. Up to four rows fit at once; a longer line is
-  paged through over time so its tail is still shown.
+  paged through over time so its tail is still shown. The hub keeps a monotonic
+  playback clock, so a stale Spotify connect-state frame cannot rewind the bar
+  or the lyric line (nor be mistaken for a pause while music is still playing).
 - **Remote Spotify restart**: a Normal-mode page that kills and relaunches the
   Spotify desktop app on the hub PC, for when it hangs and needs an Alt+F4.
   Ten seconds after the request the device polls playback for six seconds and
@@ -52,6 +54,12 @@ small Python hub that runs on a PC in the same LAN.
   home first and otherwise to the strongest one, then falls back to trying the
   configured list. `tools/wifi_import.py` copies every saved Windows profile
   into `config.json` in one go.
+
+## Preview
+
+Rendered with `tools/preview.py` against the fake board (no hardware needed):
+
+![STATUS panels and lyric rows](docs/images/preview.png)
 
 ## Two UI modes
 
