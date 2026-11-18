@@ -15,7 +15,7 @@ import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-M5F = os.path.join(ROOT, "uiflow", "atoms3-desk-gadget.m5f2")
+M5F = os.path.join(ROOT, "uiflow", "AtomS3DeskGadget.m5f2")
 FW = os.path.join(ROOT, "firmware")
 
 

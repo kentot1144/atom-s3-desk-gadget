@@ -20,7 +20,8 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FW = os.path.join(ROOT, "firmware")
-DEFAULT_OUT = os.path.join(ROOT, "uiflow", "atoms3-desk-gadget.m5f2")
+# Plain A-Z/a-z/0-9 filename: UIFlow2 rejects non-ASCII characters in names.
+DEFAULT_OUT = os.path.join(ROOT, "uiflow", "AtomS3DeskGadget.m5f2")
 
 # (relative path in /flash, create only if missing).  The desk modules are
 # enumerated from disk so a new module can never be left out by accident.

@@ -45,10 +45,17 @@ UIFlow1 projects are incompatible, so use UIFlow2.
 
 ## Ready-made `.m5f2` import (recommended)
 
-Download [`uiflow/atoms3-desk-gadget.m5f2`](../uiflow/atoms3-desk-gadget.m5f2)
+Download [`uiflow/AtomS3DeskGadget.m5f2`](../uiflow/AtomS3DeskGadget.m5f2)
 (about 101 KB) and import it with **Import → Import project from local file**
 in UIFlow2. The IDE switches to **AtomS3** automatically and opens a
 Python-mode project with the launcher already in the code editor.
+
+The filename is deliberately plain ASCII (letters and numbers only):
+UIFlow2 shows **"Filename must be English or number."** for any non-ASCII
+character. If you save the file somewhere with a Japanese folder name, copy it
+to `C:\Users\<you>\Downloads\` first and upload it from there.
+`atoms3-desk-gadget.m5f2` is an identical older copy, kept for anyone who
+already downloaded it.
 
 The file is self-contained but safe. It embeds the device modules as text in a
 small launcher: on first run the launcher writes them to `/flash` and starts

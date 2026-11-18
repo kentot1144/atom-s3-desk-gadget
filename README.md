@@ -91,9 +91,10 @@ Want to publish this to M5Stack's UIFlow2 **Project Zone**? See
 [docs/UIFLOW.md](docs/UIFLOW.md) for the paste-ready project description and
 publish steps. Two safe ways to load the device code are provided:
 
-- [`uiflow/atoms3-desk-gadget.m5f2`](uiflow/atoms3-desk-gadget.m5f2) — import it
+- [`uiflow/AtomS3DeskGadget.m5f2`](uiflow/AtomS3DeskGadget.m5f2) — import it
   directly in UIFlow2 (**Import → Import project from local file**). The
-  launcher writes the split modules to flash on first run.
+  filename is letters/numbers only because UIFlow2 rejects non-ASCII names.
+  The launcher writes the split modules to flash on first run.
 - [`uiflow/atoms3-desk-uiflow.zip`](uiflow/atoms3-desk-uiflow.zip) — upload the
   files manually if the `.m5f2` launcher runs out of heap.
 
