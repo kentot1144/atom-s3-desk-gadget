@@ -61,6 +61,8 @@ Every image below is rendered from the real page code with `tools/gallery.py`
 and `tools/preview.py` against a fake board, so no hardware is needed to see
 the layout, colours and font sizes the device actually draws.
 
+![AtomS3 Desk Gadget cover](docs/images/cover.png)
+
 ### Normal mode
 
 Clock, weather, pomodoro, PC stats, servers, notices, mascot, restart and status:

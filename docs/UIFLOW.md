@@ -9,6 +9,35 @@ This repository is a **plain MicroPython project**, not a native block-based
 UIFlow project. UIFlow2 can still run it: select AtomS3, switch to **Python**
 mode, and upload the `.py` files as project files.
 
+## Fields to fill in
+
+Copy these straight into the create-project / project-details form:
+
+**Name**
+
+```
+AtomS3 Desk Gadget - Clock, Spotify Lyrics & PC Stats
+```
+
+**Description**
+
+```
+Hub-driven AtomS3 desk display with clock, weather, pomodoro, PC stats, service
+monitoring, notices, and live Spotify playback with synced lyrics. Python-mode
+project for AtomS3; requires a PC running the included hub. Source and setup:
+https://github.com/kentot1144/atom-s3-desk-gadget
+```
+
+**Cover image**
+
+Upload [`docs/images/cover.png`](images/cover.png) from this repository
+(1200x675 PNG). It shows the real clock, lyric and status pages rendered from
+the firmware. If the form asks for a URL instead of a file, use:
+
+```
+https://raw.githubusercontent.com/kentot1144/atom-s3-desk-gadget/main/docs/images/cover.png
+```
+
 ## 1. Prepare the UIFlow project
 
 1. Download [`uiflow/atoms3-desk-uiflow.zip`](../uiflow/atoms3-desk-uiflow.zip)
