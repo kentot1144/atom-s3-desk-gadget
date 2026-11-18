@@ -57,7 +57,29 @@ small Python hub that runs on a PC in the same LAN.
 
 ## Preview
 
-Rendered with `tools/preview.py` against the fake board (no hardware needed):
+Every image below is rendered from the real page code with `tools/gallery.py`
+and `tools/preview.py` against a fake board, so no hardware is needed to see
+the layout, colours and font sizes the device actually draws.
+
+### Normal mode
+
+Clock, weather, pomodoro, PC stats, servers, notices, mascot, restart and status:
+
+![Normal mode pages](docs/images/normal-pages.png)
+
+### Spotify mode and lyrics
+
+Track page, short/wrapped/paged lyrics, paused and hub-offline states:
+
+![Spotify pages](docs/images/spotify-pages.png)
+
+### Status sub-pages
+
+The health page and the bare Spotify page it alternates with:
+
+![Status sub-pages](docs/images/status-pages.png)
+
+### Overview
 
 ![STATUS panels and lyric rows](docs/images/preview.png)
 
