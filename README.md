@@ -88,9 +88,16 @@ The health page and the bare Spotify page it alternates with:
 ## Share on UIFlow2
 
 Want to publish this to M5Stack's UIFlow2 **Project Zone**? See
-[docs/UIFLOW.md](docs/UIFLOW.md) for the upload bundle, paste-ready project
-description and publish steps. The bundle contains no credentials — create
-your own `config.json` locally.
+[docs/UIFLOW.md](docs/UIFLOW.md) for the paste-ready project description and
+publish steps. Two safe ways to load the device code are provided:
+
+- [`uiflow/atoms3-desk-gadget.m5f2`](uiflow/atoms3-desk-gadget.m5f2) — import it
+  directly in UIFlow2 (**Import → Import project from local file**). The
+  launcher writes the split modules to flash on first run.
+- [`uiflow/atoms3-desk-uiflow.zip`](uiflow/atoms3-desk-uiflow.zip) — upload the
+  files manually if the `.m5f2` launcher runs out of heap.
+
+Neither contains credentials — create your own `config.json` locally.
 
 ## Two UI modes
 

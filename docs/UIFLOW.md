@@ -43,7 +43,33 @@ https://raw.githubusercontent.com/kentot1144/atom-s3-desk-gadget/main/docs/image
 Select **AtomS3** under *Official* (not AtomS3-Lite or AtomS3R). UIFlow2 and
 UIFlow1 projects are incompatible, so use UIFlow2.
 
-## 1. Prepare the UIFlow project
+## Ready-made `.m5f2` import (recommended)
+
+Download [`uiflow/atoms3-desk-gadget.m5f2`](../uiflow/atoms3-desk-gadget.m5f2)
+(about 101 KB) and import it with **Import → Import project from local file**
+in UIFlow2. The IDE switches to **AtomS3** automatically and opens a
+Python-mode project with the launcher already in the code editor.
+
+The file is self-contained but safe. It embeds the device modules as text in a
+small launcher: on first run the launcher writes them to `/flash` and starts
+the app, so you do not have to upload 11 files by hand. Only the placeholder
+`config.json.example` is embedded — no Wi-Fi passwords, hub token or personal
+data. If a real `/flash/config.json` already exists, it is left untouched.
+
+After the first run, open **Project Files** in UIFlow2 and edit
+`/flash/config.json` as shown in section 2. Then use **Run Once** to test and
+**Run Always** to keep it on the device; choose **Run main.py directly** in the
+flashing options to boot straight into the gadget.
+
+> The modules stay split on flash because MicroPython cannot compile one ~90 KB
+> file in the ESP32-S3 boot heap. If UIFlow2's firmware reports a `MemoryError`
+> while compiling the launcher, use the manual ZIP method below instead.
+
+`tools/make_m5f2.py` rebuilds the file from the tracked `firmware/` sources, and
+`tools/m5f2_test.py` checks that every embedded module matches the source
+byte-for-byte.
+
+## 1. Prepare the UIFlow project manually (alternative)
 
 1. Download [`uiflow/atoms3-desk-uiflow.zip`](../uiflow/atoms3-desk-uiflow.zip)
    from this repository and unzip it. It contains **only** device-side code —
