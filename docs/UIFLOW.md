@@ -11,32 +11,37 @@ mode, and upload the `.py` files as project files.
 
 ## Fields to fill in
 
-Copy these straight into the create-project / project-details form:
+Copy these straight into the create-project / project-details form. The form
+limits are **50 characters for the name** and **255 for the description**, so
+use exactly these shorter versions.
 
-**Name**
-
-```
-AtomS3 Desk Gadget - Clock, Spotify Lyrics & PC Stats
-```
-
-**Description**
+**Name** (43 characters)
 
 ```
-Hub-driven AtomS3 desk display with clock, weather, pomodoro, PC stats, service
-monitoring, notices, and live Spotify playback with synced lyrics. Python-mode
-project for AtomS3; requires a PC running the included hub. Source and setup:
-https://github.com/kentot1144/atom-s3-desk-gadget
+AtomS3 Desk Gadget - Clock & Spotify Lyrics
+```
+
+**Description** (241 characters)
+
+```
+Hub-driven AtomS3 desk display: clock, weather, pomodoro, PC stats, service checks, notices, and live Spotify playback with synced lyrics. Python-mode project; needs a PC hub. Source + setup: https://github.com/kentot1144/atom-s3-desk-gadget
 ```
 
 **Cover image**
 
 Upload [`docs/images/cover.png`](images/cover.png) from this repository
-(1200x675 PNG). It shows the real clock, lyric and status pages rendered from
-the firmware. If the form asks for a URL instead of a file, use:
+(1200x675 PNG, 32 KB — under the form's 500 KB limit). It shows the real clock,
+lyric and status pages rendered from the firmware. If the form asks for a URL
+instead of a file, use:
 
 ```
 https://raw.githubusercontent.com/kentot1144/atom-s3-desk-gadget/main/docs/images/cover.png
 ```
+
+**Device**
+
+Select **AtomS3** under *Official* (not AtomS3-Lite or AtomS3R). UIFlow2 and
+UIFlow1 projects are incompatible, so use UIFlow2.
 
 ## 1. Prepare the UIFlow project
 
@@ -88,22 +93,14 @@ In the UIFlow2 Web IDE: **Project Management → My Project** → set the projec
 to **Private** and fill in the details → submit. M5Stack reviews it; once
 approved it appears in **Project Zone** and others can import it.
 
-Paste these fields:
+Use the **Name**, **Description** and **Cover image** values from
+[Fields to fill in](#fields-to-fill-in) above — they already fit the form's
+character and file-size limits.
 
-**Name**
+If the publish form has an extra free-form details field, paste this longer
+text there:
 
-```
-AtomS3 Desk Gadget - Clock, Spotify Lyrics & PC Stats
-```
-
-**Short description**
-
-```
-Hub-driven AtomS3 desk display: clock, weather, pomodoro, PC stats, service
-monitoring, notices, and live Spotify playback with synced lyrics.
-```
-
-**Description / details**
+**Longer details (optional)**
 
 ```
 A multi-page desk gadget for the M5Stack AtomS3 (128x128). The PC runs a small
