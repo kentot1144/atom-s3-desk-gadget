@@ -83,6 +83,13 @@ The health page and the bare Spotify page it alternates with:
 
 ![STATUS panels and lyric rows](docs/images/preview.png)
 
+## Share on UIFlow2
+
+Want to publish this to M5Stack's UIFlow2 **Project Zone**? See
+[docs/UIFLOW.md](docs/UIFLOW.md) for the upload bundle, paste-ready project
+description and publish steps. The bundle contains no credentials — create
+your own `config.json` locally.
+
 ## Two UI modes
 
 | Mode | Screens |
