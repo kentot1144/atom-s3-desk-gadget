@@ -301,6 +301,32 @@ def main():
                 print("FAIL spotify   %-14s %r"
                       % ("%s lyrics=%d" % (label, lyrics), e))
 
+    # Lyrics mode header: track + artist instead of the SPOTIFY label, and it
+    # actually slides when the combined text is wider than the free strip.
+    app.hub.sp = dict(base, song="Way Back Home", artist="SHAUN")
+    app.spot.enter()
+    app.spot.lyrics = True
+    del TEXTS[:]
+    app.spot.refresh(time.ticks_ms())
+    app.spot.draw()
+    app.spot.hdr_hold_until = time.ticks_add(time.ticks_ms(), -1000)
+    missing = [w for w in ("Way Back Home - SHAUN",) if w not in TEXTS]
+    if missing:
+        failures += 1
+        print("FAIL spotify   lyrics header missing %s" % missing)
+    elif app.spot.hdr_max_off <= 0:
+        failures += 1
+        print("FAIL spotify   lyrics header cannot slide")
+    else:
+        before = app.spot.hdr_pos
+        app.spot._tick_header(
+            time.ticks_add(time.ticks_ms(), app.spot.HDR_FRAME_MS))
+        if app.spot.hdr_pos == before:
+            failures += 1
+            print("FAIL spotify   lyrics header did not advance")
+        else:
+            print("ok   spotify   lyrics header slides track/artist")
+
     # A paused payload must actually draw PAUSED, and its progress must stop
     # instead of creeping forward.
     app.hub.sp = dict(base, is_playing=False)

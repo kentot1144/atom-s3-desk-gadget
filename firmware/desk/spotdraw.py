@@ -1,5 +1,5 @@
 """Spotify page renderer: song rows, sliding lyrics and progress."""
-from desk.ui import ACCENT, AMBER, BLACK, F_JA, F_SM, F_TINY, GREEN, LCD, LINE, MUTED, RED, SKY, W, WHITE, bar, ctext, dots, header, mmss, rtext, t1, tl, tw
+from desk.ui import ACCENT, AMBER, BLACK, F_JA, F_SM, F_TINY, GREEN, LCD, LINE, MUTED, RED, SKY, W, WHITE, bar, ctext, dots, mmss, rtext, t1, tl, tw
 
 
 class SpotDraw:
@@ -17,6 +17,15 @@ class SpotDraw:
     # pitch; four rows fit in the band.  A line that is longer than the panel
     # continues on the following rows (never clipped mid-sentence), and a line
     # that needs more than four rows is paged through over time.
+    # Lyrics-mode header: track + artist slide across the free left strip.
+    HDR_X = 6
+    HDR_W = 96              # right 26 px are reserved for the page counter
+    HDR_Y = 3
+    HDR_TXT = 0.6           # EFontJA24 scaled to fit the 21 px header
+    HDR_FRAME_MS = 40
+    HDR_HOLD_MS = 700
+    HDR_STEP = 2
+
     SLOT_Y = 22
     SLOT_H = 17
     TXT = 0.7
@@ -51,11 +60,51 @@ class SpotDraw:
             self.dirty_prog = False
             self._draw_prog()
 
+    def _header_text(self):
+        """One-line header label: current track and artist."""
+        d = self.app.hub.sp or {}
+        song = " ".join(str(d.get("song") or "").split())[:40]
+        artist = " ".join(str(d.get("artist") or "").split())[:40]
+        if song and artist:
+            return "%s - %s" % (song, artist)
+        return song or artist
+
+    def _draw_header_scroll(self, c):
+        """Draw the track/artist label inside the left part of the header."""
+        text = getattr(self, "hdr_text", "") or self._header_text()
+        if not text:
+            return
+        max_off = getattr(self, "hdr_max_off", 0)
+        off = min(max(0, getattr(self, "hdr_pos", 0)), max_off)
+        x = self.HDR_X - off
+        LCD.setFont(F_JA)
+        try:
+            LCD.setTextSize(self.HDR_TXT)
+        except Exception:
+            pass
+        LCD.setTextColor(c, BLACK)
+        LCD.drawString(text, int(x), self.HDR_Y)
+        try:
+            LCD.setTextSize(1)
+        except Exception:
+            pass
+
     def _chrome(self):
         """Header and dots.  The slide can push text into the top strip."""
         app = self.app
-        header("SPOTIFY", app.idx, len(app.page_list()),
-               GREEN if app.hub.playing() else ACCENT)
+        c = GREEN if app.hub.playing() else ACCENT
+        LCD.fillRect(0, 0, W, self.BAND_Y, BLACK)
+        if self.lyrics and getattr(self, "hdr_text", ""):
+            self._draw_header_scroll(c)
+        else:
+            t1("SPOTIFY", F_SM, 6, 5, c)
+        # The page counter owns the right end; clear anything the sliding label
+        # painted there before drawing it.
+        LCD.fillRect(self.HDR_X + self.HDR_W, 0,
+                     W - self.HDR_X - self.HDR_W, self.BAND_Y, BLACK)
+        rtext("%d/%d" % (app.idx + 1, len(app.page_list())),
+              F_TINY, 122, 7, MUTED)
+        LCD.fillRect(0, 20, W, 1, LINE)
         dots(len(app.page_list()), app.idx)
 
     def _draw_full(self):

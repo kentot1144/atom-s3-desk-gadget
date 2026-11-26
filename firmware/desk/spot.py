@@ -77,6 +77,13 @@ class Spot(SpotDraw):
         self.slide_at = 0
         self.armed_for = None       # next_at value already animated for
         self.sync_at = 0            # next direct lyric alignment with Spotify
+        # Lyrics-mode header (song - artist) slides like a marquee.
+        self.hdr_text = ""
+        self.hdr_pos = 0
+        self.hdr_dir = 1
+        self.hdr_max_off = 0
+        self.hdr_frame_at = 0
+        self.hdr_hold_until = 0
 
     def enter(self):
         self.sig = None
@@ -97,6 +104,7 @@ class Spot(SpotDraw):
         # Align with the live Spotify position shortly after entering (and
         # every few seconds after that) instead of trusting the first payload.
         self.sync_at = time.ticks_add(time.ticks_ms(), 2000)
+        self._plan_header(time.ticks_ms())
 
     def soft_hold(self):
         self.lyrics = not self.lyrics
@@ -113,12 +121,60 @@ class Spot(SpotDraw):
         self.pos = 0
         self.dir = 1
         self.dirty_full = True
+        self._plan_header(time.ticks_ms())
         if not self.lyrics:
             # Back to the song rows: re-measure them for sideways scrolling.
             self._plan(self.app.hub.sp or {})
 
     def _pos(self):
         return self.app.hub.progress()
+
+    def _plan_header(self, now):
+        """Measure the lyrics header and restart its slide for a new track."""
+        self.hdr_text = self._header_text()
+        try:
+            LCD.setTextSize(1)
+            LCD.setFont(F_JA)
+            LCD.setTextSize(self.HDR_TXT)
+            w = tw(self.hdr_text, F_JA) if self.hdr_text else 0
+        except Exception:
+            w = 0
+        finally:
+            try:
+                LCD.setTextSize(1)
+            except Exception:
+                pass
+        self.hdr_max_off = max(0, w - self.HDR_W)
+        self.hdr_pos = 0
+        self.hdr_dir = 1
+        self.hdr_frame_at = now
+        self.hdr_hold_until = time.ticks_add(now, self.HDR_HOLD_MS)
+
+    def _tick_header(self, now):
+        """Advance the track/artist marquee. True when the header changed."""
+        if not self.lyrics:
+            return False
+        text = self._header_text()
+        if text != self.hdr_text:
+            self._plan_header(now)
+            return True
+        if not text or self.hdr_max_off <= 0:
+            return False
+        if time.ticks_diff(now, self.hdr_frame_at) < self.HDR_FRAME_MS:
+            return False
+        self.hdr_frame_at = now
+        if time.ticks_diff(now, self.hdr_hold_until) < 0:
+            return False
+        self.hdr_pos += self.hdr_dir * self.HDR_STEP
+        if self.hdr_pos >= self.hdr_max_off:
+            self.hdr_pos = self.hdr_max_off
+            self.hdr_dir = -1
+            self.hdr_hold_until = time.ticks_add(now, self.HDR_HOLD_MS)
+        elif self.hdr_pos <= 0:
+            self.hdr_pos = 0
+            self.hdr_dir = 1
+            self.hdr_hold_until = time.ticks_add(now, self.HDR_HOLD_MS)
+        return True
 
     def refresh(self, now):
         hub = self.app.hub
@@ -150,6 +206,7 @@ class Spot(SpotDraw):
             self.slide = 0
             self.armed_for = None
             self._plan(sp)
+            self._plan_header(now)
             self.dirty_full = True
         elif time.ticks_diff(now, self.prog_at) > 250:
             self.prog_at = now
@@ -166,6 +223,9 @@ class Spot(SpotDraw):
             self.long = False
             self.animating = False
             self.slide = 0
+            self.hdr_text = ""
+            self.hdr_max_off = 0
+            self.hdr_pos = 0
             self.dirty_full = True
 
     # -- lyrics ------------------------------------------------------
@@ -402,6 +462,12 @@ class Spot(SpotDraw):
         # Re-align with the live playback position every few seconds.
         if self.lyrics:
             self._sync_tick(now)
+
+        # Scroll the track/artist label in the header while lyrics are shown.
+        # It needs its own dirty flag: the lyric block can be perfectly still
+        # while the marquee is moving.
+        if self._tick_header(now):
+            self.dirty_lines = True
 
         redraw = self.refresh(now)
 

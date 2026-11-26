@@ -149,7 +149,8 @@ Highlights
 - Spotify mode: track, artist, device and progress bar; play/pause, next,
   previous, and a lyric overlay that follows the real playback position.
 - Lyrics use one fixed mid-size font, up to four evenly-spaced rows, with long
-  lines continuing in reading order and extra-long lines paged over time.
+  lines continuing in reading order and extra-long lines paged over time. The
+  top strip switches from `SPOTIFY` to a sliding `track - artist` label.
 - Wi-Fi roaming prefers your home network when visible.
 - Dark, cool-themed English UI.
 
