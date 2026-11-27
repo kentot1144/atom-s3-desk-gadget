@@ -1,7 +1,11 @@
-"""Wi-Fi roaming: scan for known networks, home first, then the rest."""
+"""Wi-Fi roaming: always try the 5 GHz home AP first, then check the hub."""
 import json
 import time
 from desk.const import HOME_AFTER_MS, ROAM_AFTER_MS
+
+# The home 5 GHz LAN is the only one that can reach the hub.  Detect it by
+# its "-5p" suffix instead of storing a real (private) SSID in the source.
+HOME_SUFFIX = "-5p"
 
 # ------------------------------------------------------------------- config
 def load_cfg():
@@ -38,7 +42,9 @@ class Wifi:
         self.wlan = wlan
         self.nets = _nets(cfg)
         self.idx = 0
-        self.home = self.nets[0][0] if self.nets else ""
+        home = next((n[0] for n in self.nets
+                     if n[0].endswith(HOME_SUFFIX)), "")
+        self.home = home or (self.nets[0][0] if self.nets else "")
         self.ssid = ""
         self.try_ssid = ""
         self.out_at = 0
@@ -109,27 +115,26 @@ class Wifi:
         return vis
 
     def _order(self, now, force=False):
-        """Known networks to try: home first when visible, then the strongest.
+        """Known networks to try: 5p home first, then the strongest visible.
 
         Returns None when the radio cannot scan, so the caller can fall back
-        to cycling the configured list.
+        to cycling the configured list.  The home AP is tried first even if
+        the scan does not list it; hub reachability decides whether we stay.
         """
         vis = self._scan(now, force)
-        if vis is None:
-            return None
         out = []
-        if self.home and self.home in vis:
-            for n in self.nets:
-                if n[0] == self.home:
-                    out.append(n)
-                    break
-        rest = [n for n in self.nets if n[0] != self.home and n[0] in vis]
-        rest.sort(key=lambda n: vis.get(n[0], -999), reverse=True)
-        out += rest
-        if not out:
-            # The AP may be hidden from the scan; still try what we know.
-            return list(self.nets)
-        return out
+        for n in self.nets:
+            if n[0] == self.home:
+                out.append(n)
+                break
+        if vis is not None:
+            rest = [n for n in self.nets if n[0] != self.home and n[0] in vis]
+            rest.sort(key=lambda n: vis.get(n[0], -999), reverse=True)
+            out += rest
+        # Hidden / unscanned networks still get a turn after the visible ones.
+        out += [n for n in self.nets
+                if n[0] != self.home and n not in out]
+        return out or None
 
     def poll(self, now, hub_ok):
         up = self.up()

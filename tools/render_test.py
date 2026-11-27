@@ -791,7 +791,7 @@ def main():
             failures += 1
             print("FAIL rows_tick expected 1..%d then wrap" % npages)
 
-    # Wi-Fi: home first when visible, otherwise the strongest known AP
+    # Wi-Fi: 5p home first, then the strongest visible AP
     from desk.wifi import Wifi as WifiCls
 
     class ScanWlan(FakeWlan):
@@ -819,9 +819,20 @@ def main():
     order = wf._order(time.ticks_ms(), force=True)
     names = [n[0] for n in order] if order else []
     print("ok   wifi      away order=%r" % (names,))
-    if names[:2] != ["neighbour", "far-cafe"]:
+    if names[:3] != ["home", "neighbour", "far-cafe"]:
         failures += 1
-        print("FAIL wifi      strongest visible was not first")
+        print("FAIL wifi      home must stay first even when not scanned")
+
+    # The "-5p" home network is always first, even if listed after another
+    # network and not present in the current scan.
+    sw.aps = [("guest", b"", 1, -40, 0, 0)]
+    w5 = WifiCls(sw, {"wifi": [{"ssid": "guest", "password": "g"},
+                               {"ssid": "home-5p", "password": "h"}]})
+    names = [n[0] for n in (w5._order(time.ticks_ms(), force=True) or [])]
+    print("ok   wifi      5p order=%r" % (names,))
+    if names[:2] != ["home-5p", "guest"]:
+        failures += 1
+        print("FAIL wifi      5p must be first")
 
     print("FAILURES:", failures)
     return 1 if failures else 0
